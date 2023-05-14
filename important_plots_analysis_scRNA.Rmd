@@ -1,0 +1,302 @@
+---
+title: "important_plots_analysis_scRNA"
+author: "aaron kollo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Load libraries:
+
+```{r, message=FALSE}
+library(dplyr)
+library(tidyverse)
+library(data.table)
+library(reshape2)
+library(readxl)
+library(ggplot2)
+library(Seurat)
+library(RColorBrewer)
+```
+
+
+
+
+# load scRNA meta data
+```{r}
+cond <- "healthy"
+sample.path <-list.files(paste0("livercellatlas_data/RNAseq/", cond), full.names = T) %>%
+                          .[grepl("rawData", .)] %>%
+                          paste0(.,"/")
+img.save.path <- r"(C:\Users\aaronko\OneDrive - Karolinska Institutet\Uni\Master\4. Semester\thesis_project\writing\images\scRNA clustering\)"
+
+```
+
+
+
+# load data from enrichment analysis
+```{r}
+important_plots <- readRDS(file = paste0(sample.path,"important_plots.rds"))
+  
+  # readRDS(file = paste0(sample.path, "/important_plots_", sample,".rds"))
+
+
+```
+
+```{r}
+top_genes_df <- lapply(important_plots, function(x) x$top.genetic.genes.df) %>%
+  bind_rows(.id = "disease")
+```
+
+```{r}
+top_genes_df <- top_genes_df%>%
+  mutate(significance.level = ifelse(p.value.adjusted < 0.001, "***",
+                     ifelse(p.value.adjusted < 0.01, "**",
+                     ifelse(p.value.adjusted < 0.05, "*",
+                     ""))))
+# knitr::kable(head(top_genes_df))
+head(top_genes_df, 10)
+```
+
+
+## plotting
+
+### figure 4a
+bar graph
+```{r, fig.width=12}
+p1 <- meta %>%
+  add_count(celltype_detailed) %>%
+  mutate(celltype_detailed = reorder(celltype_detailed, -n)) %>%
+  ggplot(aes(x = celltype_detailed))+
+  geom_bar(width = 0.9, position = "dodge", stat="count") +
+  scale_y_continuous(name = "cell counts")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.3, hjust=1, face = "bold", size = 11), 
+        legend.position = "none")+
+  scale_x_discrete(labels = function(x) {
+    x <- gsub("_"," ", x)
+    x <- str_wrap(x, width = 18)})
+# +  ggtitle("Total cell counts over all digestion protocols")
+
+p1
+```
+
+
+```{r, fig.width=10, eval = F, include = F}
+# ggsave(filename = paste0(img.save.path, "cell type number count bar.svg"),
+#        plot = p1,
+#        device = "svg",
+#        dpi = 10,
+#        width = 12)
+```
+
+
+
+
+### figure 4b
+UMAP colored by celltype
+```{r}
+meta <- read.csv(paste0(sample.path, "meta_sctransformed_pca_filtered.tsv"),
+                 sep = "\t")
+
+centers <- meta %>% dplyr::group_by(celltype_detailed) %>% summarize(x = median(x = UMAP_1), y = median(x = UMAP_2))
+centers <- centers %>%
+  mutate(y = ifelse(celltype_detailed %in% c("Mesothelial cells","Naïve CD8+ T cells","CTLs","Trans. Monocytes"), y + 0.5, y))
+
+umap.nafld.example <- top_genes_df %>%
+  filter(disease == "NAFLD") 
+
+meta <- meta %>%
+  left_join(umap.nafld.example)%>% # adds the "log10p" column from the enrichment analysis for NAFLD associated genes to the meta DF
+  rename(x = UMAP_1,
+         y = UMAP_2)
+```
+
+
+```{r, fig.height=22.5, fig.width = 30}
+pt.size <- 0.6
+
+label.size <- 8
+library(shadowtext)
+
+set.seed(30)
+p <- meta %>%
+  ggplot(aes(x=x, y = y,colour = celltype_detailed))+
+  geom_point(size = pt.size, alpha = 0.8)+ #, shape = 21, stroke = 0.1, alpha = 0.7, color = "white"
+  geom_shadowtext(data = centers, aes(x = x, y = y, label = celltype_detailed), color = "black", bg.color = "white", fontface='bold', size=label.size)+ #, color = celltype_detailed
+  theme(legend.key.size = unit(0.5, 'cm'),
+        # legend.key = element_rect(fill),
+        legend.title = element_text(size=25),
+        legend.text = element_text(size=20),
+        legend.position = "none",
+        axis.title.x = element_text(size=20),
+        axis.title.y = element_text(size=20),
+        axis.text.x = element_text(size=15),
+        axis.text.y = element_text(size=15))+ 
+  labs(x = "UMAP_1", 
+       y = "UMAP_2")+
+  guides(colour = guide_legend(override.aes = list(size=15)))
+
+p
+```
+
+```{r, eval = F, include = F}
+ggsave(filename = paste0(img.save.path,"UMAP cell types detailed5.png"),
+       plot = p,
+       device = "png",
+       dpi = 300,
+       width = 30,
+       height = 22.5,
+       units = "in")
+```
+
+
+### figure 5a
+UMAP colored by enrichment for NAFLD-associated genes
+```{r, fig.height=22.5, fig.width = 30}
+pt.size <- 0.4
+label.size <- 8
+library(shadowtext)
+p <- meta %>%
+  ggplot(aes(x=UMAP_1, y = UMAP_2,colour = log10.p))+
+  geom_point(size = pt.size, alpha = 0.8)+ #, shape = 21, stroke = 0.1, alpha = 0.7, color = "white"
+  
+  geom_shadowtext(data = centers, aes(x = x, y = y, label = celltype_detailed), color='black', fontface='bold', size=label.size, bg.colour = "white")+
+  theme(
+        legend.key.size = unit(2, 'cm'),
+        # legend.key = element_rect(fill),
+        legend.title = element_text(size=25),
+        legend.text = element_text(size=20),
+        # legend.position = "none",
+        axis.title.x = element_text(size=20),
+        axis.title.y = element_text(size=20),
+        axis.text.x = element_text(size=15),
+        axis.text.y = element_text(size=15))+ 
+  labs(legend = "-log10(p-value)",
+       colour = "-log10(p-value)")+
+  # guides(colour = guide_legend(override.aes = list(size=15)))+
+  scale_colour_viridis_c(begin = 0.2, option = "turbo")
+
+```
+
+```{r, fig.height=22.5, fig.width = 30}
+p
+```
+
+
+```{r, fig.height=22.5, fig.width = 30, eval = F, include = F}
+ggsave(filename = paste0(img.save.path,"UMAP cell types -log10(p).png"),
+       plot = p,
+       device = "png",
+       dpi = 300,
+       width = 30,
+       height = 22.5,
+       units = "in")
+
+```
+
+### geom_tile
+```{r, fig.width=12, fig.height=10}
+p <- top_genes_df %>%
+  ggplot(aes(x = celltype_detailed, y = disease, fill = significant))+
+  geom_tile(colour = "grey20")+
+  scale_fill_manual(values = c("grey75","red"), breaks = c("FALSE", "TRUE"))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.key.width = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm"))+
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 22))+
+  coord_equal()+
+  labs(x = "cell type",
+       fill = "significant Bonferroni\n adjusted p-value")
+
+
+  
+p
+```
+
+### figure 5b
+```{r, fig.width=12, fig.height=14}
+p <- top_genes_df %>%
+  ggplot(aes(x = celltype_detailed, y = disease))+
+  geom_tile(aes(color = significance.level))+
+  geom_tile(colour = "grey20", aes(fill = log10.p))+
+  # geom_point(aes(shape = significant))+
+  geom_text(data = top_genes_df %>% filter(significant == TRUE),
+              aes(label = significance.level),
+              vjust = 0.75,
+              size = 5,
+              fontface = "bold"
+              )+
+  # scale_fill_manual(values = c("grey75","red"), breaks = c("FALSE", "TRUE"))+
+  theme(
+    # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.key.width = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm"),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, face = "bold", size = 10),
+        axis.text.y = element_text(face = "bold", size = 10))+
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 22))+
+  coord_equal()+
+  labs(x = "cell type",
+       fill = "-log10(p-value)")+
+  scale_fill_viridis_c(begin = 0.2, option = "turbo")+
+  scale_color_manual(values = c("*" = "white", "**" = "white"),  
+                     labels = c("***" = "***  p < 0.001", "**" = "**  p < 0.01", "*" = "*  p < 0.05"),
+                     guide = guide_legend(override.aes = list(shape = c(21, 23),
+                                                              fill = c("white", "white"),
+                                                              size = 4)))
+
+p
+```
+
+
+```{r, eval = F, include = F}
+# ggsave(filename = paste0(img.save.path,"geom_tile -log10(p).svg"),
+#        plot = p,
+#        device = svg(),
+#        dpi =96,
+#        width = 14,
+#        height = 12,
+#        units = "in")
+```
+
+
+### figure S6a
+UMAP colored by digestion protocol
+```{r, fig.height=11, fig.width = 15}
+p <- meta %>%
+  ggplot(aes(x=x, y = y,colour = digest))+
+  geom_point(size = pt.size, alpha = 0.8)+ 
+  theme(legend.key.size = unit(0.5, 'cm'),
+        legend.title = element_text(size=25),
+        legend.text = element_text(size=20),
+        # legend.position = "none",
+        axis.title.x = element_text(size=20),
+        axis.title.y = element_text(size=20),
+        axis.text.x = element_text(size=15),
+        axis.text.y = element_text(size=15))+ 
+  labs(x = "UMAP_1", 
+       y = "UMAP_2")+
+  guides(colour = guide_legend(override.aes = list(size=15)))
+
+p
+```
+
+```{r}
+ggsave(filename = paste0(img.save.path,"suppl UMAP digestion.png"),
+       plot = p,
+       device = "png",
+       dpi = 300,
+       width = 15,
+       height = 11,
+       units = "in")
+
+```
+
+
+
+
+
+

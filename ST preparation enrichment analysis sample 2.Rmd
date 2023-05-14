@@ -1,0 +1,500 @@
+---
+title: "LCA_preparation_sliding_window_JBO009"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    dev: 'CairoPNG'
+date: "Sys.Date()"
+---
+
+Load libraries:
+```{r, message=FALSE}
+library(STutility)
+library(dplyr)
+library(tidyverse)
+library(data.table)
+library(reshape2)
+library(readxl)
+library(ggplot2)
+library(Seurat)
+library(RColorBrewer)
+```
+
+
+# setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+
+big_screen <- T
+knitr::opts_hooks$set(fig.width = function(options) {
+  if (big_screen == T) {
+    options$fig.width = options$fig.width*1.5
+  }
+  options
+})
+knitr::opts_hooks$set(fig.height = function(options) {
+  if (big_screen == T) {
+    options$fig.height = options$fig.height*1.5
+  }
+  options
+})
+knitr::opts_chunk$set(dev = "CairoPNG")
+```
+
+``` {r nullset setup}
+nullset <- T #set if we want to calc null set or not
+
+```
+
+# Load ST data:
+```{r}
+infoTable <- read.csv("livercellatlas_data/visium/mouse/infoTable.csv", header = TRUE, sep =",")
+sample <- "BH001"
+sample.path <- paste("livercellatlas_data/visium/mouse", infoTable[infoTable$short_file_name == sample,]$geo_accession, sep = "/")
+se <-  InputFromTable(infotable = infoTable[infoTable$short_file_name == sample,],
+                      minUMICountsPerGene = 100,
+                      minSpotsPerGene = 5,
+                      minUMICountsPerSpot = 500,
+                      platform =  "Visium")
+# num_samples <- length(unique(se@meta.data[["condition"]]))
+```
+
+
+
+Load image:
+```{r}
+se <- LoadImages(se, time.resolve = FALSE)
+```
+==> note that this is only applicable to 1 samples. for more samples it has to be modified
+```{r fig.width = 10, fig.height = 8}
+p1 <- ggplot() +
+  geom_histogram(data = se[[]], aes(nFeature_RNA), fill = "red", alpha = 0.7, bins = 50) +
+  ggtitle("Unique genes per spot")
+
+p2 <- ggplot() +
+  geom_histogram(data = se[[]], aes(nCount_RNA), fill = "red", alpha = 0.7, bins = 50) +
+  ggtitle("Total counts per spots")
+
+gene_attr <- data.frame(nUMI = Matrix::rowSums(se@assays$RNA@counts), 
+                        nSpots = Matrix::rowSums(se@assays$RNA@counts > 0))
+p3 <- ggplot() +
+  geom_histogram(data = gene_attr, aes(nUMI), fill = "red", alpha = 0.7, bins = 50) +
+  scale_x_log10() +
+  ggtitle("Total counts per gene (log10 scale)")
+
+p4 <- ggplot() +
+  geom_histogram(data = gene_attr, aes(nSpots), fill = "red", alpha = 0.7,  bins = 50) +
+  ggtitle("Total spots per gene")
+
+(p1 - p2)/(p3 - p4)
+
+```
+
+``` {r}
+mt.genes <- grep(pattern = "^mt-", x = rownames(se), value = TRUE)
+se$percent.mito <- (Matrix::colSums(se@assays$RNA@counts[mt.genes, ])/Matrix::colSums(se@assays$RNA@counts))*100
+#theres a function for this: se$percent.mito <- PercentageFeatureSet(object = se, pattern = "^MT-")
+#(“^MT-“) works for human gene names, "^mt-" for mouse!
+# Collect all genes coding for ribosomal proteins
+rp.genes <- grep(pattern = "^Rpl|^Rps", x = rownames(se), value = TRUE)
+se$percent.ribo <- (Matrix::colSums(se@assays$RNA@counts[rp.genes, ])/Matrix::colSums(se@assays$RNA@counts))*100
+
+se <- subset(se, percent.mito <= 15)
+
+```
+
+
+
+
+View image:
+```{r}
+ImagePlot(se, method = "raster")
+```
+
+
+
+
+Normalize data: se <- SCTransform(se,return.only.var.genes = T)
+```{r, message=FALSE, include=FALSE}
+se <- SCTransform(se,return.only.var.genes = T)
+```
+
+FeatureOverlay
+```{r, fig.width=8, fig.height=4}
+
+spot_alpha = 0.2
+point.size = 1.2
+
+FeatureOverlay(se, 
+               features = c("nCount_RNA","nFeature_RNA"),
+               pt.alpha = spot_alpha,
+               pt.size = point.size,
+               add.alpha=T,
+               ncols = 2,
+               cols = c("black", "darkblue", "cyan", "yellow", "red", "darkred"))
+```
+
+  
+# Load OpenTarget files:
+## function
+```{r}
+get_opentarget <- function (opentarget_dir = getwd(), mouse_genes = NULL ){
+  OT.files <- list()
+  disease.names <- character()
+  i <- 1
+  column.names <- c("Gene_symbol","Overall_assoc.score","Genetic_assoc.","Somatic_mutation","Drugs","Pathways_system_biology","Text_mining","RNA_expression","Animal_models","Target_name")
+  
+  if (!is.null(mouse_genes)){
+    
+
+      conversion.table <- read.table(mouse_genes,
+                                     sep = "\t",
+                                     header = TRUE) 
+      #if mouse_genes dataframe is specified, load it
+
+  }
+  
+  for (OT.file in list.files(opentarget_dir)){
+    if (grepl("diseases_", OT.file)){
+      print(OT.file)
+  
+      df <- read.table(paste(opentarget_dir, OT.file, sep= "/"),
+                     sep= "\t",
+                     header=TRUE,
+                     quote = "")
+    
+      names(df) <- column.names  # rename columns
+      
+      df[df == "No data"] <- NA #Re-name N/A
+    
+      
+    
+      names(df) <- column.names  # rename columns
+      
+      df[df == "No data"] <- NA #Re-name N/A
+      
+      if (!is.null(mouse_genes)){
+        df$Gene_symbol <- conversion.table[match(df$Gene_symbol,conversion.table$hgnc_symbol),]$mgi_symbol #convert human to mouse annotation
+        OT.files[[i]] <- df
+        } else {
+          OT.files[[i]] <- df
+        }
+      i <- i+1
+      disease.name <- sub(".*diseases_","", OT.file)
+      disease.name <- gsub(".tsv", "", disease.name)
+      disease.names <- append(disease.names, disease.name)
+    }
+  }
+
+  names(OT.files) <-  disease.names
+  OT.files <- map(OT.files, ~.x %>%
+                    distinct())
+  return(OT.files)
+}
+```
+
+```{r}
+conversion.t <- read.csv("OpenTargets/mouse_human_genes_feb_23.tsv", header = T, sep = "\t")
+```
+
+## loading files
+```{r}
+OpenTargets.path <- "OpenTargets"
+
+OT.files <- get_opentarget( opentarget_dir = OpenTargets.path ,mouse_genes = "OpenTargets/mouse_human_genes.tsv")
+OT.files.human <-get_opentarget(opentarget_dir = OpenTargets.path)
+
+CVDs <- get_opentarget( opentarget_dir = "OpenTargets/CVDs" ,mouse_genes = "OpenTargets/mouse_human_genes.tsv")
+CVDs.human <- get_opentarget( opentarget_dir = "OpenTargets/CVDs" )
+
+lipid.diseases <- get_opentarget( opentarget_dir = "OpenTargets/lipids"  ,mouse_genes = "OpenTargets/mouse_human_genes.tsv")
+
+lipid.diseases.human <- get_opentarget( opentarget_dir = "OpenTargets/lipids")
+
+OT.files <- c(OT.files,  lipid.diseases)
+OT.files.human <- c(OT.files.human, lipid.diseases.human)
+
+```
+## clean 
+```{r, clean OT.files from duplicates}
+OT.files <- map(OT.files, ~.x %>%
+  dplyr::select(Gene_symbol, Overall_assoc.score, Genetic_assoc.,Drugs, Animal_models)%>%
+  distinct() %>%
+  filter(!is.na(Gene_symbol)&Gene_symbol %in% rownames(se)) %>%
+    group_by(Gene_symbol)%>%
+  slice(which.max(Overall_assoc.score))%>% #==> when there is a gene mentioned twice, only keep the row where the overall association score is the highest ==> reason for duplicates is that multiple human genes have the same mouse homolog etc...
+    ungroup())
+
+saveRDS(OT.files, file = paste("OpenTargets", sample,"OT_files_list.rds", sep = "/"))
+```
+
+# create gene lists
+
+## newer approach: split OT.fles into genes that have scores for overall.assoc (optional), genetic.assoc and drug association
+```{r}
+# put this function in lapply 
+split.OT.files <- function(x, name, prefix = T){
+  # print(x)
+  # print(name)
+  # overall.associations <-  x %>%
+  #   arrange(desc(Overall_assoc.score)) %>%
+  #   filter(!is.na(Overall_assoc.score)) %>%
+  #   .$Gene_symbol
+  genetic.associations <-  x %>%
+    arrange(desc(Genetic_assoc.)) %>%
+    filter(!is.na(Genetic_assoc.)) %>%
+    .$Gene_symbol
+  drug.associations <-  x %>%
+    arrange(desc(Drugs)) %>%
+    filter(!is.na(Drugs)) %>%
+    .$Gene_symbol
+  # print(lis[[x]])
+  if (prefix){
+    # disease <- names(x[[prefix]])
+    elements <- c(#paste(name,"overall.associations", sep = "_"),
+                  paste(name,"genetic.associations", sep = "_"),
+                  paste(name,"drug.associations", sep = "_"))
+    # print(elements)
+    list <- list(#overall.associations,
+                  genetic.associations,
+                  drug.associations )
+    names(list) <- elements
+
+  } else{
+    list <- list(#"overall.associations" = overall.associations,
+               "genetic.associations" = genetic.associations, 
+               "drug.associations" = drug.associations )
+    }
+  return(list)
+}
+
+
+# list structure is: disease1-c(overall.associations,genetic.associations, drug.associations)
+                      # disease2-c(overall.associations,genetic.associations, drug.associations)
+#to get:                disease1-c(disease1_overall.associations,disease1_genetic.associations, disease1_drug.associations)
+                      # disease2-c(disease2_overall.associations,disease2_genetic.associations, disease2_drug.associations) 
+# state: prefix = T
+
+
+```
+
+
+
+```{r}
+OT.files.split <- map2(OT.files, names(OT.files), split.OT.files, prefix = T) 
+# can also use imap apparently, where "imap(x, ...), an indexed map, is short hand for map2(x, names(x), ...) if x has names,"
+```
+
+### filter genes to those also present in the SE object and get rid of empty sets
+
+#### list.seurat.filter function (from "LCA_OT_pathway_enrichment_JBO..")
+```{r }
+
+list.seurat.filter <- function (list, seurat.object){ #for a list of lists or vectors, remove those lists/vectors that are smaller than "size" ==> for addmodulescore you need genes that are also present in the object
+  list <- sapply(list, function(x) x[x %in% rownames(seurat.object)])
+  list <- list[sapply(list, function(x) length(x)>0)]
+  return(list)
+}
+```
+
+```{r}
+OT.files.split <- lapply(OT.files.split, list.seurat.filter, seurat.object = se)
+```
+
+
+
+```{r}
+saveRDS(OT.files.split, file = paste("OpenTargets", sample,"OT_files_split", sep = "/"))
+
+```
+
+### create overlapping windows
+```{r, overlapping windows function2}
+
+splitWithOverlap <- function(vec, seg.length, overlap) {
+  starts = seq(1, length(vec), by=seg.length-overlap)
+  ends   = starts + seg.length - 1
+  ends[ends > length(vec)] = length(vec)
+
+  lapply(1:length(starts), function(i) vec[starts[i]:ends[i]])
+}
+win.size <- 50
+move.by <- 10
+overlap <- win.size-move.by
+
+windows.list1 <- lapply(OT.files.split, function(x) lapply(x, splitWithOverlap, seg.length = win.size, overlap = overlap))
+
+```
+
+```{r}
+names(windows.list1$NAFLD$NAFLD_genetic.associations)
+```
+
+
+### Addmodulescore from list of list(?)
+modified function from "pathway sets enrichment"
+```{r}
+
+modulescores.from.list3 <- function(window.list, seurat.object){
+  
+  for (i in c(1:length(window.list))){
+    # disease: e.g. "NAFLD"
+    for (j in c(1:length(window.list[[i]]))){
+      #set: genetic association, drug association ==> those are lists of windows
+      # print(j)
+      num.windows <- length(window.list[[i]][[j]])
+      cat(names(window.list[[i]][j]), "\t", num.windows, " windows will be added", "\r\n")
+      
+      windows <- window.list[[i]][[j]] # list of vector of gene names
+      print(class(windows))
+      names <- paste0(names(window.list[[i]][j]),"_rank_")
+      print(names)
+      
+      seurat.object <- AddModuleScore(seurat.object, features = windows, ctrl = 100, name = names)
+      
+      # cat(i,"/",num.windows, "\t", window.name, "\r")
+      
+      # cat(window.name, "\r")
+   
+    # print(set)
+
+    }
+  }
+  # print(paste(num.all.sets, " added to seurat object"))
+  return(seurat.object)
+}
+
+```
+
+
+```{r}
+names(windows.list1[["NAFLD"]][["NAFLD_genetic.associations"]])
+
+```
+
+### get name of pathways for plotting or subsetting of se object
+modified function from "pathway sets enrichment"
+```{r }
+get.module.names <- function(window.list){
+  vec.set.names <- vector()
+  for (i in c(1:length(window.list))){
+    # disease: e.g. "NAFLD"
+    for (j in c(1:length(window.list[[i]]))){
+      #set: genetic association, drug association ==> those are lists of windows
+      names <- paste0(names(window.list[[i]][[j]]), c(1:length(window.list[[i]][[j]])))
+      vec.set.names <- c(vec.set.names, names)
+    }
+  }
+  # print(paste(num.all.sets, " added to seurat object"))
+  return(vec.set.names)
+}
+```
+
+
+
+```{r, warning=FALSE, eval = F}
+se <- modulescores.from.list3(windows.list1, se)
+
+features_to_plot <- get.module.names(windows.list1)
+# features_to_plot[150:200]
+```
+
+```{r, eval = F}
+meta.data <- se[[]]
+# maybe select only the windows, in case you don't want to change the rest of the meta.data ==> or you write the entire meta data to the file and when loading it you can still select only the sliding windows
+# used option 2 ==> 
+
+write.table(meta.data,
+          file = paste0(sample.path,"/", sample,"_sliding_window_meta_data.tsv"),
+          sep = "\t",
+          col.names = T,
+          row.names=T)
+```
+
+
+
+# NULL set permutation AddModuleScore
+
+## load clusters/zones
+```{r, eval = nullset}
+seurat_clusters <- read.csv(paste0(sample.path, "/seurat_clusters.csv"), sep ="\t", header = T)
+res.columns <- colnames(seurat_clusters)[startsWith(colnames(seurat_clusters), "SCT_snn_res.")]
+res.columns <- res.columns[grepl("0.4|0.8", res.columns)]
+cur.res <- 0.8
+cur.res <- paste0("SCT_snn_res.",cur.res)
+
+se <- AddMetaData(se, seurat_clusters)
+se$seurat_clusters <- se[[]][,cur.res]
+```
+
+## settings
+```{r, eval = T}
+# Run settings
+permutation.nr <- 10000
+genes.in.NULL.set <- 50
+
+NULL.gene.set <- list()
+
+for (i in 1:permutation.nr){
+  genes <- sample(rownames(se), size = genes.in.NULL.set)
+  NULL.gene.set[[i]] <-  genes
+}
+```
+
+## addmodulescore
+```{r, eval = T}
+se.null.set <- se
+
+se.null.set <- AddModuleScore(se.null.set, features = NULL.gene.set, name = "NULL_gene_set_")
+```
+
+
+```{r write raw null_set_data to file, eval = T}
+#write raw null_set_data to file
+se.null.set <- se.null.set[[]]
+se.null.set <- se.null.set %>%
+  select(contains("NULL_gene_set_"))
+#write raw null_set_data to file
+write.table(se.null.set, file = paste0(sample.path, "/se_null_set_meta_data", sample,"_g",genes.in.NULL.set,".tsv"),
+          sep = "\t",
+          row.names = T,
+          col.names = T)
+```
+
+
+
+
+
+```{r, further process, eval = nullset}
+#further process, calc median:
+se.null.set <- se.null.set %>%
+  summarise(across(contains("NULL_gene_set_"), median), .by = seurat_clusters)%>%
+  column_to_rownames("seurat_clusters") %>%
+  t() %>%
+  as.data.frame()
+# se_test2 <- reshape(se_test2, idvar = "seurat_clusters", direction = "wide") #necessary? cant remember
+
+```
+
+
+```{r, eval = nullset}
+#write summarized null_set_data to file
+write.table(se.null.set,
+            file = paste0(sample.path, "/se_null_set_", sample,"_g", genes.in.NULL.set,".tsv"),
+            sep = "\t",
+            row.names = T,
+            col.names = T
+            )
+# ==> file se_null_set_JBO009.tsv is written to folder livercellatlas_data/visium/mouse/GSM5764415
+```
+
+
+Session info
+```{r}
+sessionInfo()
+```
+

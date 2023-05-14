@@ -1,0 +1,204 @@
+---
+title: "subsample cells for stereoscope"
+author: "aaronko"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# load libraries
+```{r libraries}
+library(dplyr)
+library(data.table)
+library(tidyverse)
+library(Seurat)
+library(RColorBrewer)
+library(SeuratDisk)
+```
+
+# load scRNA seurat object 
+```{r load seurat object, eval = T}
+# se <- readRDS("livercellatlas_data/RNAseq/healthy/rawData_mouseStSt/filtered_se.rds")
+cond <- "healthy"
+sample.path <-list.files(paste0("livercellatlas_data/RNAseq/", cond), full.names = T) %>%
+                          .[grepl("rawData", .)] %>%
+                          paste0(.,"/")
+
+se <- LoadH5Seurat(paste0(sample.path, "sctransformed_pca_filtered_se2.h5seurat"), reductions = FALSE, graphs = FALSE)
+DefaultAssay(object = se)
+DefaultAssay(se) <- "SCT"
+se
+length(Cells(se))
+se <- SetIdent(se, value = "celltype_detailed")
+
+# get cell type frequencies
+filt.cell.types <- table(Idents(se))
+
+# subset to have minimum of 25 cells representing the cell type (lower bound)
+filt.cell.types <- names(filt.cell.types[filt.cell.types >= 25])
+
+# subset to have upper bound of representative cells (e.g. 250) (upper bound)
+se <- subset(se, downsample = 250, idents = filt.cell.types)
+gc()
+```
+
+
+
+
+# variable feature selection (partial standard Seurat workflow)
+1. normalization (NormalizeData or SCTransform)
+2. variable feature selection ==> what we need/want for the -gl *--gene_list) flag in stereoscope 
+(3. data scaling
+4. PCA on variable features
+5. construction of a shared-nearest-neighbors graph
+6. clustering using a modularity optimizer)
+
+https://satijalab.org/seurat/articles/essential_commands.html
+
+```{r variable feature selection, eval = T, include = T}
+
+se <- FindVariableFeatures(object = se, nfeatures = 5000)
+var.features <- VariableFeatures(se) %>% as.data.frame() %>% rename(gene = ".")
+
+
+#write
+fwrite(var.features,
+          file = "livercellatlas_data/RNAseq/healthy/rawData_mouseStSt/variable_genes_5000_SCT.txt",
+          col.names = F,
+          row.names = F)
+
+
+```
+
+# subsample cells
+```{r subsample cells, eval = T}
+# # load RNA assay for stereoscope analysis ==> do not use normalized data!
+# se <- LoadH5Seurat(paste0(sample.path, "sctransformed_pca_filtered_se2.h5seurat"), assays = "RNA", reductions = FALSE, graphs = FALSE)
+# se
+# gc()
+# # set Identity to cell type annotation
+```
+
+# write single cell annotation
+```{r write single cell annotation, eval = T}
+meta <- se[[]]
+print(colnames(meta))
+meta <- meta %>%
+  select(celltype_detailed)
+
+#write
+fwrite(meta,
+       file = "livercellatlas_data/RNAseq/healthy/rawData_mouseStSt/stsc_SC_annotation.tsv",
+        sep = "\t",
+        row.names = TRUE,
+        col.names = TRUE)
+
+```
+
+#write SC count matrix
+```{r write count matrix, eval = T}
+raw.count.matrix <- GetAssayData(se[["RNA"]], slot = "counts")
+raw.count.matrix <- as.matrix(raw.count.matrix) %>% t()
+
+raw.count.matrix[c(1:5),c(1:5)]
+
+#write
+fwrite(raw.count.matrix,
+        file = "livercellatlas_data/RNAseq/healthy/rawData_mouseStSt/stsc_SC_count_matrix.tsv",
+        sep = "\t",
+        row.names = TRUE,
+        col.names = TRUE)
+
+```
+
+
+```{r, eval = T}
+remove(list = ls())
+gc()
+```
+
+finished with scRNA stuff, then ST data:
+
+# load ST seurat object
+```{r, eval = T}
+library(STutility)
+
+#input
+#needs to be loaded with STUtility!!
+infoTable <- read.csv("livercellatlas_data/visium/mouse/infoTable.csv", header = TRUE, sep =",")
+sample <- "JBO002"
+sample.path <- paste("livercellatlas_data/visium/mouse", infoTable[infoTable$short_file_name == sample,]$geo_accession, sep = "/")
+se <-  InputFromTable(infotable = infoTable[infoTable$short_file_name == sample,],
+                      minUMICountsPerGene = 100,
+                      minSpotsPerGene = 5,
+                      minUMICountsPerSpot = 500,
+                      platform =  "Visium")
+
+se <- LoadImages(se, time.resolve = FALSE)
+mt.genes <- grep(pattern = "^mt-", x = rownames(se), value = TRUE)
+se$percent.mito <- (Matrix::colSums(se@assays$RNA@counts[mt.genes,])/Matrix::colSums(se@assays$RNA@counts))*100
+# se <- subset(se, percent.mito <= 15)
+
+```
+
+```{r}
+# sum(var.features$gene %in% rownames(se))
+# var.features <- var.features[var.features$gene %in% rownames(se),]
+# fwrite(var.features,
+#           file = "livercellatlas_data/RNAseq/healthy/rawData_mouseStSt/variable_genes_SCT.txt",
+#           col.names = F,
+#           row.names = F)
+```
+
+```{r}
+print("extracting coordinates from STUtility Staffli object")
+coordinates <- se@tools$Staffli@meta.data
+coordinates <- coordinates %>%
+  reframe(barcodes = rownames(.),
+          coordinates = paste0(x,"x",y))
+```
+
+
+```{r, fig.width=5, fig.height=3}
+raw.count.matrix <- GetAssayData(se[["RNA"]], slot = "counts")
+# translate barcodes to coordinates based on STUtility, stereoscope "look" function uses the coordinates
+raw.count.matrix <- as.matrix(raw.count.matrix) %>% t() %>% as.data.frame() %>%
+  rownames_to_column(var = "barcodes") %>%
+  left_join(coordinates) %>%
+  column_to_rownames("coordinates") %>%
+  mutate(barcodes = NULL)
+
+raw.count.matrix[c(1:5),c(1:5)]
+library(stringr)
+test <- row.names(raw.count.matrix) %>%
+  str_split(., "x") %>%
+  do.call(rbind.data.frame,.) %>%
+  mutate_if(is.character, as.numeric)
+  
+colnames(test) <- c("x","y")
+
+#test whether coordinates and image are the same!
+ggplot(test, aes(x=x,y=y)) +
+  geom_point()+
+  scale_y_reverse() #for some reason, the barcodes are ordered in a way that it looks upside down compared to ST.FeaturePlot ==> why? # it's definitely the correct coordinate corresponding to the barcode because we perform a join on the barcode ==> they need to match
+ImagePlot(se, method = "raster", annotate = FALSE)
+
+#write
+fwrite(raw.count.matrix,
+        file = paste0("livercellatlas_data/RNAseq/healthy/rawData_mouseStSt/stsc_ST_",sample,"_count_matrix.tsv"),
+        sep = "\t",
+        row.names = TRUE,
+        col.names = TRUE)
+
+```
+
+
+
+
+
+
+
+

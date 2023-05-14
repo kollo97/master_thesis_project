@@ -1,0 +1,86 @@
+author: "aaron kollo"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    dev: 'CairoPNG'
+date: "Sys.Date()"
+---
+
+Load libraries:
+```{r, message=FALSE}
+library(dplyr)
+library(tidyverse)
+library(data.table)
+library(reshape2)
+library(Seurat)
+library(SeuratDisk)
+library(unix)
+```
+
+
+# setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+
+big_screen <- T
+knitr::opts_hooks$set(fig.width = function(options) {
+  if (big_screen == T) {
+    options$fig.width = options$fig.width*1.5
+  }
+  options
+})
+knitr::opts_hooks$set(fig.height = function(options) {
+  if (big_screen == T) {
+    options$fig.height = options$fig.height*1.5
+  }
+  options
+})
+knitr::opts_chunk$set(dev = "CairoPNG")
+
+# rlimit_as(1e230)
+# rlimit_all()
+Test <- T
+```
+
+
+# Load scRNA data:
+```{r Load scRNA data, eval = Test}
+# se <- readRDS()
+cond <- "healthy"
+sample.path <-list.files(paste0("livercellatlas_data/RNAseq/", cond), full.names = T) %>%
+                          .[grepl("rawData", .)] %>%
+                          paste0(.,"/")
+se <- readRDS(file = "livercellatlas_data/RNAseq/healthy/rawData_mouseStSt/filtered_se.rds")
+
+```
+
+# load annotation data and downsample
+```{r load annotation data, eval = Test}
+scrna.meta <- read.csv("livercellatlas_data/RNAseq/annot_mouseStStAll.csv")
+scrna.meta <- scrna.meta %>%
+  rename(celltype = annot)%>%
+  mutate(celltype = as.factor(celltype)) %>%
+  column_to_rownames("cell")
+se <- AddMetaData(se, metadata = scrna.meta)
+celltypes <- as.character(unique(se$celltype))
+se <- SetIdent(se, value = "celltype")
+se <- subset(se, downsample = 5000, idents = celltypes)
+
+length(Cells(se))
+# test <- se[[]]
+```
+Normalize data: se <- SCTransform(se,return.only.var.genes = T)
+# SCTransfrom
+```{r Normalize data, message=FALSE, include=FALSE, eval = Test}
+se <- SCTransform(se,return.only.var.genes = T)
+se <- RunPCA(se)
+se <- FindNeighbors(se, dims = 1:30)
+se <- FindClusters(se, verbose = FALSE)
+se <- RunUMAP(se, dims = 1:30)
+SaveH5Seurat(se, paste0(sample.path, "sctransformed_pca_filtered_se"))
+```
+

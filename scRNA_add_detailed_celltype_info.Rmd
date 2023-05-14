@@ -1,0 +1,51 @@
+---
+title: "add detailed celltype info from merged-df2"
+author: "aaron kollo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(data.table)
+library(dplyr)
+library(tidyverse)
+library(SeuratDisk)
+library(Seurat)
+```
+
+``` {r celltypes and-or selfmade cluster }
+celltypes <- T
+```
+
+
+# load data
+## sample basic info
+```{r}
+cond <- "healthy"
+sample.path <-list.files(paste0("livercellatlas_data/RNAseq/", cond), full.names = T) %>%
+                          .[grepl("rawData", .)] %>%
+                          paste0(.,"/")
+se <- LoadH5Seurat(paste0(sample.path, "sctransformed_pca_filtered_se.h5seurat"))
+DefaultAssay(object = se)
+se
+barcodes <- rownames(se[[]])
+length(Cells(se))
+```
+
+```{r}
+detailed_celltypes_df <- read.csv(paste0(sample.path, "/merged_annot_mouseStSt.csv"), header = T) %>%
+  rename(barcode = cell) %>%
+  column_to_rownames("barcode") %>%
+  select(sample, digest, celltype_toplevel, celltype_detailed, origin, UMAP_1, UMAP_2)
+
+se <- AddMetaData(se,detailed_celltypes_df) 
+
+```
+
+```{r}
+SaveH5Seurat(se, paste0(sample.path, "sctransformed_pca_filtered_se2"))
+```

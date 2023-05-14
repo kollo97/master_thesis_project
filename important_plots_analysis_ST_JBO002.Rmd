@@ -1,0 +1,285 @@
+---
+title: "important_plots_analysis_ST_JBO002"
+author: "aaron kollo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Load libraries:
+
+```{r, message=FALSE}
+library(STutility)
+library(dplyr)
+library(tidyverse)
+library(data.table)
+library(reshape2)
+library(readxl)
+library(ggplot2)
+library(Seurat)
+library(RColorBrewer)
+```
+# load ST/SC data
+```{r}
+infoTable <- read.csv("livercellatlas_data/visium/mouse/infoTable.csv", header = TRUE, sep =",")
+sample <- "JBO002"
+sample.path <- paste("livercellatlas_data/visium/mouse", infoTable[infoTable$short_file_name == sample,]$geo_accession, sep = "/")
+se <-  InputFromTable(infotable = infoTable[infoTable$short_file_name == sample,],
+                      minUMICountsPerGene = 100,
+                      minSpotsPerGene = 5,
+                      minUMICountsPerSpot = 500,
+                      platform =  "Visium")
+
+img.save.path <- r"(C:\Users\aaronko\OneDrive - Karolinska Institutet\Uni\Master\4. Semester\thesis_project\writing\images\sliding_window\ST\JBO002\)"
+```
+
+```{r}
+se <- LoadImages(se, time.resolve = FALSE)
+```
+
+==\> note that this is only applicable to 1 samples. for more samples it has to be modified
+
+View image:
+
+```{r}
+ImagePlot(se, method = "raster")
+```
+
+Normalize data: se \<- SCTransform(se,return.only.var.genes = T)
+
+```{r, message=FALSE, include=FALSE}
+se <- SCTransform(se,return.only.var.genes = T)
+```
+
+FeatureOverlay
+
+```{r, fig.width=8, fig.height=4}
+
+spot_alpha = 0.2
+point.size = 1.2
+
+FeatureOverlay(se, 
+               features = c("nCount_RNA","nFeature_RNA"),
+               pt.alpha = spot_alpha,
+               pt.size = point.size,
+               add.alpha=T,
+               ncols = 2,
+               cols = c("black", "darkblue", "cyan", "yellow", "red", "darkred"))
+```
+
+## load zone and annotated seurat_clusterss from "spatial_structures" file
+
+```{r, load clusters and zones}
+res <- 0.8
+seurat_clusters <- read.csv(paste0(sample.path, "/seurat_clusters_res",res, ".csv"), sep ="\t", header = T)
+se$seurat_clusters <- seurat_clusters
+se$seurat_clusters <-as.factor(se$seurat_clusters)
+
+seurat_zones_df <- read.csv(paste(sample.path,"seurat_clusters_annot_zones.csv",sep = "/"), sep ="\t", header = T) 
+seurat_zones <- seurat_zones_df$seurat_clusters
+names(seurat_zones) <- row.names(seurat_zones_df)
+seurat_zones <- sort(seurat_zones)
+se$zone <- as.factor(seurat_zones)
+```
+
+```{r}
+library(viridis)
+n <- 18
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+col_vector[6] <- "white"
+col_vector[8] <- "lightpink"
+# col_vector2 <- c("darkred","orange","lightblue","darkblue",col_vector)
+n <- length(unique(se$seurat_clusters))
+col_vector2 <- turbo(n = n, begin = 0.2, end = 1)
+se <- SetIdent(se, value="seurat_clusters")
+```
+
+## Cluster Feature Overlay
+
+```{r,fig.width=10, fig.height=4}
+# col_vector2 <- c("orange","lightblue","red","darkblue")
+
+p1 <- FeatureOverlay(object = se, features = "zone", pt.alpha = 0.6, pt.size = 1.25, cols = col_vector2, pt.border = FALSE)
+p2 <- FeatureOverlay(object = se, features = "seurat_clusters", pt.alpha = 0.6, pt.size = 1.25, cols = col_vector2, pt.border = FALSE)
+p3 <- FeatureOverlay(object = se, features = "Cyp2e1", pt.alpha = 0.6, pt.size = 1.25, cols = c("black", "darkblue", "cyan", "yellow", "red", "darkred"), pt.border = FALSE)
+
+p1|p2
+p2|p3
+
+```
+
+## figure 1b and 3b
+```{r, fig.height=4, fig.width=5, eval = F, include = F}
+p2 <- ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 1.1, cols = col_vector2, pt.border = FALSE)+
+    theme(
+    # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.key.width = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm"))+
+    guides(colour = guide_legend(override.aes = list(size=10)),
+           fill = guide_legend(override.aes = list(size=3)))+
+  labs(legend = "seurat clusters",
+       fill = "seurat clusters")
+
+p2
+
+ggsave(filename = paste0(img.save.path, "seurat cluster res 0.8.svg"),
+       plot = p2,
+       device = "svg",
+       dpi = 96,
+       height = 4,
+       width = 5)
+```
+
+```{r}
+meta <- se[[]]%>%
+  mutate(zone = ifelse(seurat_clusters %in% c(2,4,6), "pericentral",
+                       ifelse(seurat_clusters %in% c(0,5), "mid",
+                              "periportal")))%>%
+  select(zone)
+se <- AddMetaData(se, meta)
+```
+
+```{r, fig.height=4, fig.width=5, eval = F, include = F}
+p2 <- ST.FeaturePlot(object = se, features = "zone", pt.size = 1.1, cols = col_vector2, pt.border = FALSE)+
+    theme(
+    # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.key.width = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm"))+
+    guides(colour = guide_legend(override.aes = list(size=10)),
+           fill = guide_legend(override.aes = list(size=3)))+
+  labs(legend = "seurat clusters",
+       fill = "seurat clusters")+
+  scale_fill_viridis_d()
+
+p2
+
+```
+
+
+```{r, fig.height=4, fig.width=5, eval = F, include = F}
+ggsave(filename = paste0(img.save.path, "zone featureoverlay.svg"),
+       plot = p2,
+       device = "svg",
+       dpi = 96,
+       height = 4,
+       width = 5)
+```
+
+
+# load data from enrichment analysis
+```{r}
+important_plots <- readRDS(file = paste0(sample.path, "/important_plots_",sample,".rds"))
+  
+  # readRDS(file = paste0(sample.path, "/important_plots_", sample,".rds")
+```
+
+```{r}
+top_genes_df <- lapply(important_plots, function(x) x$top.genetic.genes.df) %>%
+  bind_rows(.id = "disease")
+
+```
+
+```{r}
+head(top_genes_df, 10)
+
+```
+
+
+```{r}
+top_genes_df <- top_genes_df%>%
+  mutate(significance.level = ifelse(p.value.adjusted < 0.001, "***",
+                     ifelse(p.value.adjusted < 0.01, "**",
+                     ifelse(p.value.adjusted < 0.05, "*",
+                     ""))))
+```
+
+## plotting
+### figure 3a
+spatial p plot
+```{r}
+p.vals <- se[[]]
+p.vals<- p.vals %>%
+  left_join(top.genetic.genes) %>%
+  select(!contains("rank"))
+rownames(p.vals) <- rownames(se[[]])
+p.se <- se 
+p.se <- AddMetaData(p.se, p.vals)
+p <- ST.FeaturePlot(object = p.se,
+              features = "log10.p",
+              pt.size = 1,
+              cols = col_vector2
+              )+
+  labs(fill="-log10(p-value)", title = "") 
+p
+```
+
+### geom_tile
+
+```{r, fig.width=8, fig.height=10}
+p <- top_genes_df %>%
+  ggplot(aes(x = seurat_clusters, y = disease, fill = significant))+
+  geom_tile(colour = "grey20")+
+  scale_fill_manual(values = c("grey75","red"), breaks = c("FALSE", "TRUE"))+
+  theme(
+    # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.key.width = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm"))+
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 22))+
+  coord_equal()+
+  labs(x = "seurat cluster",
+       fill = "significant Bonferroni\n adjusted p-value")
+
+p
+```
+
+### figure 3c
+enrichment analysis matrix
+```{r, fig.width=8, fig.height=10}
+tick.size <- 10
+print(unique(top_genes_df$significance.level))
+p <- top_genes_df %>%
+  ggplot(aes(x = seurat_clusters, y = disease, fill = log10.p))+
+  geom_tile(aes(color = significance.level))+
+  geom_tile(colour = "grey20", aes(fill = log10.p))+
+  # geom_point(aes(shape = significant))+
+  geom_text(data = top_genes_df %>% filter(significant == TRUE),
+              aes(label = significance.level),
+              vjust = 0.75,
+              size = 5,
+              fontface = "bold"
+              )+
+  # scale_fill_manual(values = c("grey75","red"), breaks = c("FALSE", "TRUE"))+
+  theme(
+    # axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.key.width = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm"),
+        axis.text.x = element_text(face = "bold", size = 10),
+        axis.text.y = element_text(face = "bold", size = 10))+
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 22))+
+  coord_equal()+
+  labs(x = "seurat cluster",
+       fill = "-log10(p-value)")+
+  scale_fill_viridis_c(begin = 0.2, option = "turbo")+
+  scale_color_manual(values = c("***" = "white", "**" = "white"),
+                     labels = c("***" = "***  p < 0.001", "**" = "**  p < 0.01"),
+                     guide = guide_legend(override.aes = list(shape = c(21, 23),
+                                                              fill = c("white", "white"),
+                                                              size = 4)))
+
+p
+
+```
+
+```{r}
+ggsave(filename = paste0(img.save.path, "geom_tile log10 pvalue.svg"),
+       plot = p,
+       device = "svg",
+       dpi = 96,
+       height = 10,
+       width = 8)
+```
+
+

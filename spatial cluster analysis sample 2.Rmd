@@ -1,0 +1,574 @@
+---
+title: "LCA_mouse_liver_spatial_structures_BH001"
+author: "aaronko"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+    dev: CairoPNG
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+
+big_screen <- T
+knitr::opts_hooks$set(out.width = function(options) {
+  if (big_screen == T) {
+    options$out.width = "100%"
+  }
+  options
+})
+knitr::opts_hooks$set(out.height = function(options) {
+  if (big_screen == T) {
+    options$out.height = "100%"
+  }
+  options
+})
+knitr::opts_chunk$set(dev = "CairoPNG")
+```
+
+# Load libraries:
+
+```{r, message=FALSE}
+library(STutility)
+library(dplyr)
+library(RColorBrewer)
+library(scales)
+library(reshape2)
+library(Seurat)
+save.imgs <- F #set to true or to false to save/not save the csv markers 
+preprocessing <- T
+
+```
+
+# Load ST data
+
+```{r}
+infoTable <- read.csv("livercellatlas_data/visium/mouse/infoTable.csv", header = TRUE, sep =",")
+sample <- "BH001"
+sample.path <- paste0("livercellatlas_data/visium/mouse/", infoTable[infoTable$short_file_name == sample,]$geo_accession, "/")
+se <-  InputFromTable(infotable = infoTable[infoTable$short_file_name == sample,],
+                      minUMICountsPerGene = 100,
+                      minSpotsPerGene = 5,
+                      minUMICountsPerSpot = 500,
+                      platform =  "Visium")
+# adt.assay <- read.csv(paste0(sample.path,"GSM5764423_counts_ADT_BH001.csv"), 
+#                       row.names = 1)
+# adt.assay <- CreateAssayObject(counts = adt.assay)
+# se[["ADT"]] <- adt.assay
+# colnames(adt.assay)[ncol(adt.assay)]
+# all(colnames(se) %in% colnames(adt.assay))
+```
+
+Load image:
+
+```{r}
+se <- LoadImages(se, time.resolve = FALSE)
+```
+
+View image:
+
+```{r, fig.width=5, fig.height=4}
+ImagePlot(se, method = "raster", annotate = FALSE)
+```
+
+# preprocessing
+QC metrics se:
+
+```{r}
+# Collect all genes coded on the mitochondrial genome
+mt.genes <- grep(pattern = "^mt-", x = rownames(se), value = TRUE)
+se$percent.mito <- (Matrix::colSums(se@assays$RNA@counts[mt.genes, ])/Matrix::colSums(se@assays$RNA@counts))*100
+#theres a function for this: se$percent.mito <- PercentageFeatureSet(object = se, pattern = "^MT-")
+#(“^MT-“) works for human gene names, "^mt-" for mouse!
+# Collect all genes coding for ribosomal proteins
+rp.genes <- grep(pattern = "^Rpl|^Rps", x = rownames(se), value = TRUE)
+se$percent.ribo <- (Matrix::colSums(se@assays$RNA@counts[rp.genes, ])/Matrix::colSums(se@assays$RNA@counts))*100
+
+```
+
+Plot QC metrics se:
+
+```{r, fig.width=5, fig.height=4}
+pt.size.featureplot <- 1.25
+
+# mitochondrial genes
+p1 <- ST.FeaturePlot(se, features = "percent.mito", cols = c("lightgray", "mistyrose", "red", "dark red", "black"), pt.size = pt.size.featureplot)
+
+# ribosomal protein gene
+p2 <- ST.FeaturePlot(se, features = "percent.ribo", cols = c("lightgray", "mistyrose", "red", "dark red", "black"), pt.size = pt.size.featureplot, pt.border = FALSE, dark.theme = F)
+
+p1
+p2
+
+# q <- ggplot_build(p1)
+# q[["data"]][[1]]$stroke <- NA
+# q <- ggplot_gtable(q)
+# plot(q)
+```
+
+
+```{r, fig.width=5, fig.height=4}
+se <- subset(se, percent.mito <= 15)
+
+# mitochondrial genes
+p1 <- ST.FeaturePlot(se, features = "percent.mito", cols = c("lightgray", "mistyrose", "red", "dark red", "black"), pt.size = pt.size.featureplot)
+
+# ribosomal protein gene
+p2 <- ST.FeaturePlot(se, features = "percent.ribo", cols = c("lightgray", "mistyrose", "red", "dark red", "black"), pt.size = pt.size.featureplot, pt.border = FALSE, dark.theme = F)
+
+p1
+p2
+
+
+```
+
+
+
+## Normalize data, SCTransform
+```{r, message=FALSE, eval = preprocessing}
+se <- SCTransform(se,return.only.var.genes = T)
+```
+
+## NNMF
+
+non-negative matrix factorization (NNMF)
+
+
+### 10 factors ==> liver does not seem to have such a distinct, complex spatial organization. When selecting 40 factors, most of them do not appear to have any spatial pattern.
+non-negative matrix factorization (NNMF)
+
+```{r, eval = preprocessing}
+DefaultAssay(se) <- "SCT"
+# nfactors <- c(10)
+# for (i in nfactors){
+#   se <- RunNMF(se, nfactors = i, reduction.name = paste0("NMF",i))
+# }
+cur.factors <- 10
+
+se <- RunNMF(se, nfactors = cur.factors, reduction.name = "NMF") # for STUtility FactorGeneLoadingPlot, the slot must be named "NMF" and cannot have a different name :-/
+```
+
+# if preprocessing was done already:
+## load preprocessed seurat object
+
+```{r, eval = F, include = F}
+infoTable <- read.csv("livercellatlas_data/visium/mouse/infoTable.csv", header = TRUE, sep =",")
+sample <- "BH001"
+sample.path <- paste0("livercellatlas_data/visium/mouse/", infoTable[infoTable$short_file_name == sample,]$geo_accession, "/")
+
+
+se <- readRDS(paste0(sample.path,"preprocessed_se_BH001.rds"))
+DefaultAssay(se) <- "SCT"
+cur.factors <- 10
+se <- RunNMF(se, nfactors = cur.factors, reduction.name = "NMF") # for STUtility FactorGeneLoadingPlot, the slot must be named "NMF" and cannot have a different name :-/
+```
+
+
+```{r, fig.width=10, fig.height=10}
+cscale <- c("darkblue", "cyan", "yellow", "red", "darkred")
+spots.dimplot <- 0.8
+n.factors <- 10
+reduct <- "NMF"
+# print(paste0("showing reduction: ", reduct))
+if (n.factors > 10){
+  max <- 10
+  factors <- c(1:cur.factors)
+  dims <- split(factors, ceiling(seq_along(factors)/max))
+  for (i in c(1:length(dims))){
+    print(unlist(dims[[i]]))
+
+    plot(ST.DimPlot(se,
+           dims = unlist(dims[[i]]),
+           ncol = 2, # Sets the number of columns at dimensions level
+           grid.ncol = 4, # Sets the number of columns at sample level
+           reduction = reduct,
+           dark.theme = T,
+           pt.size = spots.dimplot,
+           center.zero = F,
+           cols = cscale))
+  }
+ } else {
+  plot(ST.DimPlot(se,
+           dims = 1:n.factors,
+           ncol = 3, # Sets the number of columns at dimensions level
+           grid.ncol = 3, # Sets the number of columns at sample level
+           reduction = reduct,
+           dark.theme = T,
+           pt.size = spots.dimplot,
+           center.zero = F,
+           cols = cscale)
+  )
+ 
+           
+
+}
+```
+
+
+
+```{r}
+for (i in c(1:cur.factors)){
+  plot(FactorGeneLoadingPlot(se, factor = i)+ggtitle(paste("factor", i)))
+}
+```
+
+
+```{r, eval = F, include = F}
+jaccard <- function(a, b) {
+  intersection = length(intersect(a, b))
+  union = length(a) + length(b) - intersection
+  return (intersection/union)
+}
+```
+
+```{r, eval = F, include = F}
+test <- Loadings(se, reduction = "NMF20") %>% 
+  as.data.frame()
+genes <- rep(rownames(test), ncol(test))
+test.long <- stack(test)
+colnames(test.long) <- c( "weight", "factor")
+test.long$genes <- genes
+```
+
+
+```{r, eval = F, include = F}
+library(reshape2)
+long_grouped <- test.long %>%
+  group_by(factor) %>%
+  arrange(weight)%>%
+  top_n(50, wt = weight)%>%
+  select(factor, genes)%>% 
+  group_map(~.x %>% unlist()) #.x are the columns of the group. In this case it's only 1, so the unlist() function works well
+
+names(long_grouped) <- test.long %>%
+  group_by(factor) %>%
+  arrange(weight)%>%
+  top_n(50, wt = weight)  %>%
+  group_map(~.y) %>% #.y are the keys of the groups
+  unlist()
+  
+
+jac.mat <- matrix(data = NA, 
+                  nrow = length(long_grouped), 
+                  ncol = length(long_grouped), 
+                  dimnames = list(names(long_grouped), 
+                                  names(long_grouped)))
+
+
+# Iterera över två for-loopar, en för rader och en för kolumner
+for (i in 1:length(long_grouped)) {
+  for (j in 1:length(long_grouped)) {
+    # Spara jaccard mellan par av gene sets
+    jac.mat[i, j] <- jaccard(long_grouped[[i]],long_grouped[[j]])
+  }
+}
+
+long_grouped <- reshape2::melt(jac.mat)
+colnames(long_grouped) <- c("x", "y", "jac_sim")
+```
+
+```{r, fig.height = 5, fig.width=7, eval = F, include = F}
+ggplot(long_grouped, aes(x = x, y = y, fill = jac_sim)) +
+  geom_tile(colour = "black")+
+  geom_text(aes(label = round(jac_sim, 2)), color = "black", size = 2)+
+  coord_fixed()+
+  scale_fill_gradient(low = "white", high = "red")+
+  guides(fill = guide_colourbar(title = "Jaccard Similarity"))+
+  labs(x = "", y = "")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))+
+  ggtitle("Jaccard similiarity of the top 50 genes per factor")
+```
+
+
+```{r, fig.height = 7, fig.width=10, eval = F, include = F}
+library(ggcorrplot)
+ggc <- ggcorrplot(jac.mat, hc.order = TRUE, lab_size = 2, lab = T)+ 
+  scale_fill_gradient(breaks=c(0, 1), limit=c(0, 1),low = "white", high = "red")+
+  guides(fill = guide_colourbar(title = "Jaccard Similarity"))+
+  labs(x = "", y = "")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))+
+  ggtitle("Jaccard similiarity of the top 50 genes per factor")
+ggc
+```
+
+
+
+
+
+
+# clustering
+## find neighbours
+Shared Nearest Neighbor (SSN) Graph
+
+```{r}
+DefaultAssay(se) <- "SCT"
+dims.toUse002 <- c(1,2,6,9,10)
+dims.toUse009 <- c(1,3,6,8) # maybe also try c(1,2,3,4,6,8,10)
+# dims.toUseBH001 <- c(1,3,4,5,6,c(10:20)) #c(1,3,4,5,6,11,13,16,17,18,20)
+dims.toUseBH001 <-  c(1,3,5,6,10) 
+# c(1,3,5,6,10)
+print(paste0("Performing FindNeighbors using NMF", cur.factors, " and dimensions ",  paste(dims.toUseBH001, collapse = ",")))
+se <- FindNeighbors(object = se, verbose = FALSE, reduction = "NMF", dims = dims.toUseBH001)
+```
+
+Clustering using a modularity optimizer
+## findclusters
+```{r}
+res <- c(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.2,1.5)
+for (i in res){
+  se <- FindClusters(object = se, verbose = FALSE, resolution = i)
+}
+
+res.columns <- colnames(se[[]])[startsWith(colnames(se[[]]), "SCT_snn_res.")]
+```
+
+
+```{r}
+cur.res <- 0.8
+cur.res <- paste0("SCT_snn_res.", cur.res)
+cur.res
+se <- SetIdent(se, value = cur.res)
+
+```
+
+
+
+
+
+## Spatial cluster plot
+
+```{r,fig.width=5, fig.height=4}
+library(viridis)
+pt.size.featureplot <- 1.25
+
+n <- length(unique(se[[]][,cur.res]))
+col_vector2 <- viridis(n = n+1)[2:(n+1)]
+
+ST.FeaturePlot(object = se,
+               features = cur.res,
+               pt.size = pt.size.featureplot,
+               cols = col_vector2,
+               pt.border = FALSE,
+               dark.theme = F)
+
+p.overlay.unsup.clusters <- FeatureOverlay(object = se,
+                                           features = cur.res,
+                                           pt.alpha = 0.5,
+                                           pt.size = pt.size.featureplot,
+                                           cols = col_vector2,
+                                           pt.border = FALSE)
+p.overlay.unsup.clusters
+```
+
+
+
+```{r,fig.width=8, fig.height=7}
+
+ST.FeaturePlot(object = se, features = cur.res, pt.size = 0.8, split.labels = T, indices = 1, show.sb = FALSE, ncol = 3, cols = col_vector2, dark.theme = F)
+```
+
+
+Save cluster annotations
+```{r, eval=save.imgs}
+seurat_clusters <- se[[]][,res.columns]
+# seurat_clusters$Barcode <- colnames(se)
+colnames(seurat_clusters)
+write.table(seurat_clusters,file=paste0(sample.path, "/seurat_clusters", ".csv"), col.names = T, row.names = T,quote = FALSE,sep = "\t")
+```
+
+
+
+#DGE analysis, for all clusters
+
+```{r, echo = F}
+DefaultAssay(se) <- "RNA"
+se <- se %>%
+  NormalizeData() %>%
+  ScaleData()
+markers.list <- list()
+for (i in res.columns){
+  se <- SetIdent(se, value = i)
+  N.markers <- FindAllMarkers(se, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25,slot = "data")
+  markers.list[[i]] <- N.markers
+}
+se <- SetIdent(se, value = cur.res)
+```
+
+
+Save N.markers
+```{r, eval=F}
+saveRDS(markers.list, file = paste0(sample.path, "markers_list.rds"))
+# markers.list <- readRDS(file = paste0(sample.path, "markers_list.rds"))
+```
+
+
+
+
+# UMAP run
+```{r}
+se <- RunUMAP(se, reduction = "NMF", dims = dims.toUseBH001, n.neighbors = 30) #0, min.dist = 0.005
+```
+
+# save suerat object
+```{r save seurat object}
+saveRDS(se, file = paste0(sample.path,"preprocessed_se_BH001.rds"))
+
+```
+
+```{r, eval = F, include=F}
+infoTable <- read.csv("livercellatlas_data/visium/mouse/infoTable.csv", header = TRUE, sep =",")
+sample <- "BH001"
+sample.path <- paste0("livercellatlas_data/visium/mouse/", infoTable[infoTable$short_file_name == sample,]$geo_accession, "/")
+
+
+se <- readRDS(paste0(sample.path,"preprocessed_se_BH001.rds"))
+DefaultAssay(se) <- "SCT"
+cur.factors <- 10
+se <- RunNMF(se, nfactors = cur.factors, reduction.name = "NMF") # for STUtility FactorGeneLoadingPlot, the slot must be named "NMF" and cannot have a different name :-/
+```
+
+UMAP clusters
+```{r}
+p.UMAP.unsup.clusters <- DimPlot(se, reduction = "umap",
+                                 label = T,
+                                 label.size = 6,
+                                 cols = col_vector2,
+                                 combine = T,
+                                 label.box = T,
+                                 label.color = "white")
+p.UMAP.unsup.clusters
+
+```
+
+# Select top genes to plot
+```{r}
+N.markers <- markers.list[[cur.res]]
+topGenes <- N.markers %>% 
+            group_by(cluster) %>% 
+            arrange(cluster,p_val_adj) %>%
+            slice_head(n=20)
+topGenes
+```
+
+Subset top genes according to p value
+```{r}
+cluster.top.genes <- list()
+for (i in as.numeric(levels(se[[]][,cur.res]))){
+  cluster.top.genes[[i+1]] <- as.character(t(subset(topGenes,cluster==i, select = gene)))
+}
+names(cluster.top.genes) <- c(0:(length(cluster.top.genes)-1))
+cell.markers <- read.csv("cell_type_marker.csv", sep = ",", header = TRUE)
+zonation.markers <- read.csv("zonation_marker.csv", sep = ",", header = TRUE)
+
+portal.markers <- zonation.markers[!is.na(zonation.markers$portal.marker),]$portal.marker
+central.markers <- zonation.markers[!is.na(zonation.markers$central.marker),]$central.marker
+mid.markers <- zonation.markers[!is.na(zonation.markers$mid.marker),]$mid.marker
+cluster.top.genes[["portal.markers"]] <- portal.markers
+cluster.top.genes[["central.markers"]] <- central.markers
+cluster.top.genes[["mid.markers"]] <- mid.markers
+
+```
+# plots 
+## UMAP plots
+UMAP and Spatial visualization of top markers for each cluster
+```{r, fig.height=15, fig.width=14}
+max.length <- sapply(cluster.top.genes, length) %>% max() %>% as.numeric()
+library(cowplot)
+knitr::opts_current$set(fig.height = 3*max.length/4) # height is then determined by the maximum number of top genetic genes in a cluster ==> in BH001 case it's 20
+# Define colors for heatmap
+# n <- length(cluster.top.genes)
+n <- length(unique(se[[]][,cur.res]))
+col_vector2 <- viridis(n = n+1)[2:(n+1)]
+
+for (i in cluster.top.genes){
+  print(length(i))
+  if (length(i)>0){
+    p <- FeaturePlot(se,
+                     features = i,
+                     reduction = "umap",
+                     order = TRUE,
+                     pt.size = 0.2,
+                     cols = col_vector2,
+                     combine = F)
+    
+    print(plot_grid(plotlist = p, ncol = 4, nrow = max.length/4 ))
+  }
+}
+
+```
+
+## VlnPlots
+```{r, VlnPlots, fig.width = 16, fig.height = 20}
+knitr::opts_current$set(fig.height = 3*max.length/4) # height is then determined by the maximum number of top genetic genes in a cluster ==> in BH001 case it's 20
+# you basically need 0.75 width per cluster per plot in each row, i.e. 4 clusters * 4 ncol = 16 ==> *0.75 = 12 = fig.width
+
+for (i in 1:length(cluster.top.genes)){
+  print(names(cluster.top.genes[i]))
+  if (length(cluster.top.genes[[i]])>0) {
+    p <- VlnPlot(se, features = cluster.top.genes[[i]], cols = col_vector2, pt.size = 0.1, ncol = 4, combine = F)
+    for (j in 1:length(p)){
+        p[[j]] <- p[[j]]+
+          geom_boxplot(alpha = 0.6, linetype = 1, color = "black", linewidth = 1)+
+          # geom_boxplot(alpha = 0.4, linetype = 5, color = "black")+
+          theme(legend.position = "none") +
+          scale_x_discrete(name = "Seurat Clusters")
+      }
+  print(plot_grid(plotlist = p, ncol = 4, nrow = max.length/4 ))
+  }
+}
+
+```
+
+## heatmap cluster marker genes
+make heatmap of the most differentially expressed genes in each cluster, compare to zonation markers 
+```{r,, fig.width= 12, fig.height=7}
+N.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+
+
+se
+DoHeatmap(se, features = top10$gene ,group.colors = col_vector2)
+DoHeatmap(se, features = c(cluster.top.genes[["portal.markers"]],cluster.top.genes[["central.markers"]],cluster.top.genes[["mid.markers"]]), group.colors = col_vector2)
+# order clusters by Oat or Cyp2f2 expression
+library(tidyverse)
+library(forcats)
+ordering <- AverageExpression(se, features = c("Oat","Cyp2f2"), assays = "SCT", group.by = cur.res) %>% as.data.frame()  %>%
+   rownames_to_column(var = "gene") %>%
+  pivot_longer(cols = starts_with("SCT"),
+               names_to = "cluster",
+               values_to = "expression")
+ordering$cluster <- gsub("SCT.","",ordering$cluster)
+
+ordering <- ordering %>%
+  pivot_wider(names_from = gene,
+              values_from = expression)
+
+test <- ordering %>%
+  arrange(desc(Oat)) %>%
+  .$cluster
+
+# plot ordered heatmap
+top10 <- top10 %>%
+  mutate(cluster = factor(cluster, levels = test)) %>%
+  arrange(cluster)%>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC)
+se.heat <- se
+se.heat@active.ident <- factor(x =se.heat@active.ident, levels = test)
+
+DoHeatmap(se.heat, features = top10$gene ,group.colors = col_vector2)
+DoHeatmap(se.heat, features = c(cluster.top.genes[["portal.markers"]],cluster.top.genes[["central.markers"]],cluster.top.genes[["mid.markers"]]), group.colors = col_vector2)
+```
+
+
+
+
+```{r}
+sessionInfo()
+```

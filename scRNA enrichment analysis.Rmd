@@ -1,0 +1,1188 @@
+---
+title: "scRNA_SW_healthy_pvalue_CT_short"
+author: "aaron kollo"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "reports")})
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    dev: 'CairoPNG'
+date: "Sys.Date()"
+---
+
+Load libraries:
+
+```{r, message=FALSE}
+library(dplyr)
+library(tidyverse)
+library(data.table)
+library(reshape2)
+library(readxl)
+library(ggplot2)
+library(Seurat)
+library(RColorBrewer)
+library(SeuratDisk)
+```
+
+# setup
+```{r setup, include=FALSE}
+library(knitr)
+
+# which plots to print:
+violin <- F
+lineplots <- T
+p.plots <- T
+
+
+# plot setups
+# violin.w <- 12 
+# violin.h <- 9
+# 
+# working with 4K monitor?
+big_screen <- T
+
+# global chunk settings
+opts_chunk$set(echo = TRUE)
+opts_chunk$set(dev = "CairoPNG")
+opts_chunk$set(error = FALSE) # when FALSE, interrupt in case of errors                
+
+
+
+opts_hooks$set(
+# eval
+  eval = function(options) {
+    raw.code <- knit_code$get(opts_current$get()$label) 
+    raw.code <- paste(raw.code, collapse = " ")
+    if (grepl("p_value|p.val|top.genetic.genes", raw.code)) {
+      options$eval = p.plots
+      }
+    if (grepl("<<line plot>>|line.plot.setup", raw.code)){
+      options$eval = lineplots
+      }
+    if (grepl("<<Violin Plots>>|geom_violin", raw.code)){
+      options$eval = violin
+      }
+  options
+  })
+
+opts_hooks$set(
+# include
+  eval = function(options) {
+    raw.code <- knit_code$get(opts_current$get()$label) 
+    raw.code <- paste(raw.code, collapse = " ")
+    if (grepl("p_value|p.val|top.genetic.genes", raw.code)) {
+      options$include = p.plots
+      }
+    if (grepl("<<line plot>>|line.plot.setup", raw.code)){
+      options$include = lineplots
+      }
+    if (grepl("<<Violin Plots>>|geom_violin", raw.code)){
+      options$include = violin
+      }
+  options
+  })
+
+opts_hooks$set(
+# fig.width
+  fig.width = function(options) {
+    raw.code <- knit_code$get(opts_current$get()$label) 
+    raw.code <- paste(raw.code, collapse = " ")
+    if (grepl("p_value|p.val|top.genetic.genes", raw.code)) {
+        options$fig.width = 12
+        }
+    if (grepl("line plot|line.plot.setup", raw.code)){
+        options$fig.width = 30
+        }
+    if (grepl("<<Violin Plots>>|geom_violin", raw.code)){
+        options$fig.width = 12 
+        }
+
+    options
+  })
+opts_hooks$set(
+# fig.height
+  fig.height = function(options) {
+    raw.code <- knit_code$get(opts_current$get()$label) 
+    raw.code <- paste(raw.code, collapse = " ")
+    if (grepl("p_value|p.val|top.genetic.genes", raw.code)) {
+      options$fig.height = 9
+      }
+    if (grepl("line plot|line.plot.setup", raw.code)){
+      options$fig.height = 30
+      }
+    if (grepl("<<Violin Plots>>|geom_violin", raw.code)){
+      options$fig.height = 9
+      }
+    options
+  }
+)
+
+opts_hooks$set(fig.height = function(options) {
+  if (big_screen == T) {
+    options$fig.height = options$fig.height*1.5
+  }
+  options
+})
+
+
+```
+
+# Load scRNA data:
+```{r}
+# se <- readRDS()
+cond <- "healthy"
+sample.path <-list.files(paste0("livercellatlas_data/RNAseq/", cond), full.names = T) %>%
+                          .[grepl("rawData", .)] %>%
+                          paste0(.,"/")
+
+se <- LoadH5Seurat(paste0(sample.path, "sctransformed_pca_filtered_se.h5seurat"), assays = "SCT", reductions = FALSE, graphs = FALSE)
+DefaultAssay(object = se)
+se
+length(Cells(se))
+# se <- LoadH5Seurat(paste0(sample.path,"subset_filtered_se.h5seurat"))
+```
+
+
+# load other data
+
+## load window meta data
+
+from AddModuleScore (from before)
+
+```{r}
+list.files(sample.path)
+meta.data <- fread(file = paste0(sample.path, "sliding_window_meta_data_5k.tsv"),
+                      sep = "\t")
+meta.data[c(1:5),c(1:20)]
+colnames(meta.data)[1] <- "barcode"
+meta.data <- meta.data %>%
+  column_to_rownames(var = "barcode")
+
+meta.data[c(1:10), c(1:10)]
+# se <- AddMetaData(se, meta.data) # combine both dataframes on the rownames ==> remember, it needs cells as rownames
+# is it needed for scRNA analysis? Maybe not, because you have the celltype column in the sliding window .tsv
+```
+
+```{r}
+meta.data %>%
+  select(celltype, contains("_rank_")) %>%
+  colnames() %>%
+  gsub("_rank_.*","",.)%>%
+  unique()
+```
+
+```{r, make summary df of the windows}
+# this step might be also done in uppmax and then further processed locally because the sliding window data is quite big, abou
+
+summary.meta.clusters <- read.csv(file = paste0(sample.path, "sliding_window_meta_data_summarised_5k.tsv"),
+sep = "\t")
+
+library("psych")
+#here you can decide whether you wanna summarise by cluster or by zone! 
+#zone or seurat_clusters
+summarise.on <- "celltype"
+# # meta.data <- se[[]]
+# 
+# summary.meta.clusters <- meta.data %>%
+#   dplyr::select(any_of(summarise.on), contains("_rank_"))
+# 
+# summary.meta.clusters <- describeBy(summary.meta.clusters, group = summary.meta.clusters[, summarise.on], quant = c(.05, .95)) 
+# 
+# summary.meta.clusters <- lapply(summary.meta.clusters, function(x) as.data.frame(x))
+# 
+# 
+# summary.meta.clusters <- map(summary.meta.clusters, ~.x %>%
+#                                rownames_to_column(., var = "window"))
+# summary.meta.clusters <- bind_rows(summary.meta.clusters, .id = summarise.on)
+# summary.meta.clusters <- summary.meta.clusters %>%
+#   filter(!(window %like% "celltype"))
+# # rownames(summary.meta.clusters) <- NULL
+# head(summary.meta.clusters)
+```
+
+```{r}
+genetic.summary.meta.clusters <- summary.meta.clusters %>%
+  filter(window %like% "genetic")
+drug.summary.meta.clusters <- summary.meta.clusters %>%
+  filter(window %like% "drug")
+
+```
+
+## load NULL set data
+
+```{r, load NULL gene set data}
+list.files(sample.path)
+NULL.set.data <- read.csv(paste0(sample.path, "se_null_set_summarised_5k.tsv"),
+                          sep = "\t",
+                          check.names = F) #summarized perm.matrix ==> median of all permutations per cluster
+
+  
+  
+NULL.set.data <- describe(NULL.set.data, quant = c(.05, .95)) %>%
+  as.data.frame %>%
+  rownames_to_column(var = summarise.on) # summarise further using library(psych)
+```
+
+
+
+
+## introduce empty vectors to store data in
+
+```{r for p value calculations, eval = F}
+# not implemented yet, 11/04/23
+top.genes.statistics <-  list()
+```
+
+# plotting
+
+## load OT.files
+
+is easier to select the top genes and plot the density/p-value plot
+
+```{r, code_folding = 'hide'}
+OT.files.split <- readRDS(file = paste("OpenTargets/scRNA", cond,"OT_files_split.rds", sep = "/"))
+
+OT.files.split.genetic <- sapply(OT.files.split, function(x) x[grep("genetic", names(x), value = T)])
+names(OT.files.split.genetic) <- names(OT.files.split)
+OT.files.split.genetic <- OT.files.split.genetic[sapply(OT.files.split.genetic, function(x) length(x)>0)]
+
+
+OT.files.split.drug <- sapply(OT.files.split, function(x) x[grep("drug", names(x), value = T)])
+names(OT.files.split.drug) <- names(OT.files.split)
+OT.files.split.drug <- OT.files.split.drug[sapply(OT.files.split.drug, function(x) length(x)>0)]
+OT.files.split.drug <- sapply(OT.files.split.drug, function(x) x[[1]])
+```
+
+## NAFLD {.tabset}
+
+subset features_to_plot to specific disease for now
+
+```{r}
+disease <- "NAFLD"
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease))
+
+```
+
+### Violin Plots
+
+```{r Violin Plots, fig.height = 8, fig.width = 10}
+#<<Violin Plots>>
+p_list <- list()
+for (col in colnames(features_to_plot)) {
+  # Create a violin plot with boxplot and individual data points for the current column
+  p <- features_to_plot%>%
+    ggplot(aes(x = celltype, y = .data[[col]])) +
+    geom_jitter(height = 0.1, width = 0.25, alpha = 0.2, size = 0.2) +
+    geom_boxplot(width = 0.5, aes(fill = celltype), color = "black", alpha = 0.7) +
+    geom_violin(trim = FALSE, aes(fill = celltype), alpha = 0.7) +
+    labs(x = "celltype", y = col) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+  
+  # plot p
+  p_list[[col]] <- p
+  plot(p)
+}
+```
+
+
+
+
+#### line plot setup
+
+```{r, class.source = 'fold-hide', echo = FALSE}
+library(gridExtra)
+library(cowplot)
+#boxplot on the right side
+p.boxplot <- NULL.set.data %>%
+  ggplot(aes(x = celltype, ymin=min, lower= Q0.05, middle = median, upper = Q0.95, ymax = max)) +
+  geom_boxplot(stat = "identity") +
+  # ggtitle("")+
+  theme_classic()+
+  facet_wrap(vars(celltype), ncol = 1, scales = "free", strip.position = "left") #+
+  # theme(
+  # strip.background = element_blank(),
+  # strip.text.x = element_blank()
+  # )
+
+#point/line plot on the left side
+p.boxplot 
+line.plot.setup <- function(x){
+  lwd <- 0.2
+  lty <- 2
+  p1 <- ggplot(x, aes(window, median, group = 1)) +
+  geom_point(shape = "o", size = 2) +
+  geom_line(linewidth = 0.1) +
+  geom_hline(data = NULL.set.data, aes(yintercept  = min), colour = "darkred", lwd = lwd, lty = lty)+
+  geom_hline(data = NULL.set.data, aes(yintercept  = max), colour = "darkred", lwd = lwd, lty = lty)+
+  geom_hline(data = NULL.set.data, aes(yintercept  = median), col = "blue", lwd = lwd, lty = lty)+
+  geom_hline(data = NULL.set.data, aes(yintercept  = Q0.05),color = "red", lwd = lwd, lty = lty)+
+  geom_hline(data = NULL.set.data, aes(yintercept  = Q0.95), colour = "red", lwd = lwd, lty = lty)+
+  xlab("Rank") +
+  ylab("Score") +
+  scale_x_discrete(labels = c(1:nrow(x))) +
+  theme_classic()+
+  facet_wrap(~celltype, ncol = 1, scales = "free")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.background = element_blank(),
+        strip.text.x = element_blank())
+  
+  
+  combined.plot <- plot_grid(p.boxplot, p1,
+                             align = "h", axis = "b", ncol = 2, rel_widths = c(1, 20)) #https://stackoverflow.com/questions/41834093/decrease-margins-between-plots-when-using-cowplot, not used but can be adjusted
+  combined.plot
+}
+```
+
+
+### line plots
+
+```{r line plot, fig.width = 30 , fig.height=30}
+#<<line plot>>
+
+genetic_features_to_plot <- summary.meta.clusters %>%
+  filter(window %in% colnames(features_to_plot) & window %like% "genetic") 
+drug_features_to_plot <- summary.meta.clusters %>%
+  filter(window %in% colnames(features_to_plot) & window %like% "drug")
+
+line.plot.setup(genetic_features_to_plot) 
+# +
+  # ggtitle(paste0("genetic associations ", disease))
+
+
+# line.plot.setup(drug_features_to_plot) +
+#   ggtitle("drug associations")
+
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r p_value}
+nr.top.genetic.windows <- 12 #all
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+print(maximum)
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r p_value load_p_val_nullset}
+p.val.nullset <- read.csv(paste0(sample.path, "/se_null_set_summarised_g", maximum, ".tsv"), sep = "\t", check.names = F) # i
+colnames(p.val.nullset) <- gsub("X","", colnames(p.val.nullset))
+stacked.p.val.nullset <- stack(p.val.nullset)
+colnames(stacked.p.val.nullset) <- c("addmodulescore","celltype")
+stacked.p.val.nullset$permutation <- rep(c(1:10000),length(unique(stacked.p.val.nullset$celltype)))
+head(p.val.nullset)
+```
+
+##### addmodulescore for top genes
+
+```{r p_value addmodulescore_top_genes, eval = p.plots}
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+top.genetic.genes <- AddModuleScore(se, features = list(top.genetic.genes), name = paste0(disease, "_top_genetic_genes")) %>%
+  .@meta.data %>%
+  select(contains(paste0(disease, "_top_genetic_genes")), celltype)
+
+top.genetic.genes <- top.genetic.genes %>%
+  group_by(celltype)%>%
+  summarise(across(where(is.numeric), median))%>% 
+  column_to_rownames("celltype") %>%
+  t() %>%
+  as.data.frame()%>%
+  stack()
+colnames(top.genetic.genes) <- c("median","celltype")
+
+head(top.genetic.genes)
+```
+
+##### calculate p-value
+
+```{r calculate p_value, eval = p.plots}
+p.value <- imap(p.val.nullset, function(x, idx){
+  print(idx) #this is the column name
+  median.to.compare.against <-  top.genetic.genes[top.genetic.genes$celltype == idx, "median"]
+  print(paste0("median: ", median.to.compare.against))
+  length(x[x>=median.to.compare.against]) #for each column/celltype in the raw.NULL.set, subset the column to those rows that have a higher median than the median of the top (70) genes for each cluster
+})
+
+
+
+p.value <- sapply(p.value, function(x) (x+1)/(10000+1)) 
+# calculate the fraction of the medians of the  10000 permutations that are higher than the median of the top.genes median 
+# think about p-value definition:
+# “the probability of obtaining test results at least as extreme as the results actually observed, under the assumption that the null hypothesis is correct.” 
+p.value.adj <- p.adjust(p.value, method = c("bonferroni")) #, n=length(unique(top.genetic.genes$celltype))
+p.value.adj <- data.frame("p.value.adjusted" = p.value.adj, "celltype" = as.factor(names(p.value.adj)))
+
+top.genetic.genes <- top.genetic.genes %>%
+left_join(p.value.adj)
+top.genetic.genes <- top.genetic.genes %>%
+  arrange(p.value.adjusted)%>%
+  mutate(significant = ifelse(p.value.adjusted<0.05,T,F))
+
+```
+
+##### p-val plot setup
+
+```{r p_value plot setup, eval = p.plots}
+p.plot.setup <- function(top.genes.df){
+  # adj_p_value <- ifelse(top.genes.df$p.value.adjusted<0.5,
+  #                       top.genes.df$p.value.adjusted,
+  #                       1-top.genes.df$p.value.adjusted)
+  top.genes.df <- top.genes.df %>%
+  arrange(p.value.adjusted)
+  p <- ggplot(stacked.p.val.nullset, aes(x=addmodulescore)) +
+  geom_density(fill = "#69b3a2",
+               alpha = 0.8)+
+  geom_vline(data = top.genes.df, aes(xintercept = median, color = significant),
+             size = 1, show.legend = T) +
+    scale_color_manual(values = c("yellow","red"))+
+  geom_label(data = top.genes.df,
+             aes(x=median+0.02, y = 8),
+             label = paste0("adjusted p-value \n",
+                      formatC(top.genes.df$p.value.adjusted,
+                           format = "e", digits = 2)),
+             size = 2) +
+  xlab("Median score NULL gene set")+
+  ylab("Density")
+  
+p +
+  facet_wrap(~factor(celltype, levels = top.genes.df$celltype),
+             ncol = 4)+
+  theme_classic()+
+  theme(legend.position="none")
+}
+```
+
+### p-value density plot
+
+```{r p_value plot, fig.height=9, fig.width=12, eval = p.plots}
+p.plot.setup(top.genetic.genes)
+```
+
+
+
+## liver_disease_general {.tabset}
+
+subset features_to_plot to specific disease for now
+
+```{r}
+disease <- "liver_disease_general"
+
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease))
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r, eval = p.plots}
+nr.top.genetic.windows <- 14
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r, eval = p.plots}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r, eval = p.plots}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r, eval = p.plots}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r, eval = p.plots}
+<<p_value plot>>
+```
+
+purple line is the median addmodulescore of the top.genes in each cluster
+
+
+## cirrhosis_of_liver {.tabset}
+subset features_to_plot to specific disease for now
+```{r}
+disease <- "cirrhosis_of_liver"
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease))
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r}
+nr.top.genetic.windows <- 10 #just all (107)
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r}
+<<p_value plot>>
+```
+
+purple line is the median addmodulescore of the top.genes in each cluster
+
+## cirrhosis_familial {.tabset}
+subset features_to_plot to specific disease for now
+```{r}
+disease <- "cirrhosis_familial"
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease))
+
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r}
+nr.top.genetic.windows <- 9
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r}
+<<p_value plot>>
+```
+
+purple line is the median addmodulescore of the top.genes in each cluster
+
+## Diabetes type I {.tabset}
+subset features_to_plot to specific disease for now
+```{r}
+disease <- "Diabetes_typeI"
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease))
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r}
+nr.top.genetic.windows <- 18
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r}
+<<p_value plot>>
+```
+
+purple line is the median addmodulescore of the top.genes in each cluster
+
+
+## Diabetes type II {.tabset}
+subset features_to_plot to specific disease for now
+```{r}
+disease <- "diabetes_typeII"
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease))
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r}
+nr.top.genetic.windows <- 11
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r}
+<<p_value plot>>
+```
+
+purple line is the median addmodulescore of the top.genes in each cluster
+
+
+## triglyceride_measurement {.tabset}
+subset features_to_plot to specific disease for now
+OBS ==> there is also LDL_triglyceride_measurement, so have to exclude that 
+```{r}
+disease <- "triglyceride_measurement"
+
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease)& !contains("LDL"))
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r}
+nr.top.genetic.windows <- 6
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r}
+<<p_value plot>>
+```
+
+purple line is the median addmodulescore of the top.genes in each cluster
+
+
+## LDL_triglyceride_measurement {.tabset}
+subset features_to_plot to specific disease for now
+```{r}
+disease <- "LDL_triglyceride_measurement"
+
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease))
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r}
+nr.top.genetic.windows <- 24
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r}
+<<p_value plot>>
+```
+
+purple line is the median addmodulescore of the top.genes in each cluster
+
+## cholesterol_measurement {.tabset}
+subset features_to_plot to specific disease for now
+```{r}
+disease <- "cholesterol_measurement"
+
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease) & !contains("LDL")& !contains("HDL")) 
+
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r}
+nr.top.genetic.windows <- 3
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r}
+<<p_value plot>>
+```
+
+purple line is the median addmodulescore of the top.genes in each cluster
+
+## LDL_cholesterol_measurement {.tabset}
+subset features_to_plot to specific disease for now
+```{r}
+disease <- "LDL_cholesterol_measurement"
+
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease))
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r}
+nr.top.genetic.windows <- 7
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r}
+<<p_value plot>>
+```
+
+purple line is the median addmodulescore of the top.genes in each cluster
+
+
+
+
+## HDL_cholesterol_measurement {.tabset}
+should be HDL_cholesterol
+subset features_to_plot to specific disease for now
+```{r, }
+disease <- "HDL_cholesterol_measurement"
+
+features_to_plot <- meta.data %>%
+  select(celltype, contains(disease))
+```
+
+### Violin Plots
+
+```{r , eval = violin}
+<<Violin Plots>>
+```
+
+
+
+### line plots
+
+```{r, fig.width = 5, fig.height= 10}
+<<line plot>>
+```
+
+### p value permutation
+
+#### top genetic genes
+
+##### select top genes
+
+```{r}
+nr.top.genetic.windows <- 8
+#what was the window size:
+win.size <- 50
+move.by <- 10
+nr.top.genes <- win.size + ((nr.top.genetic.windows-1) * move.by)
+maximum <- ifelse(length(OT.files.split.genetic[[disease]])<=nr.top.genes,
+                  length(OT.files.split.genetic[[disease]]),
+                  nr.top.genes) %>% as.numeric()
+top.genetic.genes <- OT.files.split.genetic[[disease]][1:maximum]
+```
+
+#### load correct null set for p-value calculation
+
+==> number of genes per permutation should equal the number of top.genetic.genes (nr.top.genes)
+
+```{r}
+<<p_value load_p_val_nullset>>
+```
+
+##### addmodulescore for top genes
+
+```{r}
+<<p_value addmodulescore_top_genes>>
+```
+
+##### calculate p-value
+
+```{r}
+<<calculate p_value>>
+```
+
+### p-value density plot
+
+```{r}
+<<p_value plot>>
+```
+
+
+``` {r}
+sessionInfo()
+```

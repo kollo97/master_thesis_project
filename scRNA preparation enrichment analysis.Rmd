@@ -1,0 +1,559 @@
+---
+title: "scRNA_preparation_sliding_window_healthy"
+author: "aaron kollo"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    dev: 'CairoPNG'
+date: "Sys.Date()"
+---
+
+Load libraries:
+```{r, message=FALSE}
+library(dplyr)
+library(tidyverse)
+library(data.table)
+library(reshape2)
+library(Seurat)
+library(SeuratDisk)
+```
+
+
+# setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+
+big_screen <- T
+knitr::opts_hooks$set(fig.width = function(options) {
+  if (big_screen == T) {
+    options$fig.width = options$fig.width*1.5
+  }
+  options
+})
+knitr::opts_hooks$set(fig.height = function(options) {
+  if (big_screen == T) {
+    options$fig.height = options$fig.height*1.5
+  }
+  options
+})
+knitr::opts_chunk$set(dev = "CairoPNG")
+
+opts_chunk$set(error = TRUE)
+```
+
+``` {r nullset setup}
+nullset <- T #set if we want to calc null set or not
+sliding_window <- T
+```
+
+# Load scRNA data:
+```{r Load scRNA data}
+# se <- readRDS()
+cond <- "healthy"
+sample.path <-list.files(paste0("livercellatlas_data/RNAseq/", cond), full.names = T) %>%
+                          .[grepl("rawData", .)] %>%
+                          paste0(.,"/")
+
+# Load single-cell RNA sequencing (scRNA-seq) data from an RDS file
+# Note: The file path should be specified in the 'file' argument
+# se <- readRDS(file = "livercellatlas_data/RNAseq/healthy/rawData_mouseStSt/filtered_se.rds")
+
+# Alternatively, load scRNA-seq data from an H5Seurat file (commented out)
+# se <- LoadH5Seurat(paste0(sample.path, "sctransformed_pca_filtered_se.h5seurat"), assays = "SCT", reductions = FALSE, graphs = FALSE)
+se <- LoadH5Seurat(paste0(sample.path, "se_harmony.h5seurat"), assays = "SCT", reductions = FALSE, graphs = FALSE)
+
+DefaultAssay(object = se)
+se
+length(Cells(se))
+```
+
+
+# downsample
+if not already in the seurat object, load annotation data
+```{r load annotation data, eval = F}
+# when the preprocessed "sctransformed_pca_filtered_se.h5seurat" is already loaded, set eval = F
+
+# Load annotation data for the scRNA-seq samples
+# Note: The annotation data is read from a CSV file named "annot_mouseStStAll.csv"
+scrna.meta <- read.csv("livercellatlas_data/RNAseq/annot_mouseStStAll.csv")
+
+# Rename the "annot" column to "celltype" and convert it to a factor
+scrna.meta <- scrna.meta %>%
+  rename(celltype = annot) %>%
+  mutate(celltype = as.factor(celltype)) %>%
+  column_to_rownames("cell")
+
+# Add the annotation data as metadata to the Seurat object 'se'
+# se <- AddMetaData(se, metadata = scrna.meta)
+
+# Set the cell type identities in the Seurat object using the "celltype" column from the metadata
+se <- SetIdent(se, value = "celltype")
+
+# Subset the Seurat object to downsample to a maximum of 5000 cells per cell type
+# Note: The 'downsample' parameter is set to 5000 and the 'idents' parameter is set to 'celltypes' which contains unique cell types
+# se <- subset(se, downsample = 5000, idents = celltypes)
+
+# Perform garbage collection to free up memory
+gc()
+```
+Normalize data: se <- SCTransform(se,return.only.var.genes = T)
+# SCTransfrom
+```{r Normalize data, message=FALSE, eval = F}
+se <- SCTransform(se,return.only.var.genes = T)
+```
+
+  
+# Load OpenTarget files:
+## function
+```{r define get_opentargets function, eval = sliding_window, include = sliding_window}
+get_opentarget <- function (opentarget_dir = getwd(), mouse_genes = NULL ){
+  OT.files <- list()
+  disease.names <- character()
+  i <- 1
+  column.names <- c("Gene_symbol","Overall_assoc.score","Genetic_assoc.","Somatic_mutation","Drugs","Pathways_system_biology","Text_mining","RNA_expression","Animal_models","Target_name")
+  
+  if (!is.null(mouse_genes)){
+    
+
+      conversion.table <- read.table(mouse_genes,
+                                     sep = "\t",
+                                     header = TRUE) 
+      #if mouse_genes dataframe is specified, load it
+
+  }
+  
+  for (OT.file in list.files(opentarget_dir)){
+    if (grepl("diseases_", OT.file)){
+      print(OT.file)
+  
+      df <- read.table(paste(opentarget_dir, OT.file, sep= "/"),
+                     sep= "\t",
+                     header=TRUE,
+                     quote = "")
+    
+      names(df) <- column.names  # rename columns
+      
+      df[df == "No data"] <- NA #Re-name N/A
+    
+      
+    
+      names(df) <- column.names  # rename columns
+      
+      df[df == "No data"] <- NA #Re-name N/A
+      
+      if (!is.null(mouse_genes)){
+        df$Gene_symbol <- conversion.table[match(df$Gene_symbol,conversion.table$hgnc_symbol),]$mgi_symbol #convert human to mouse annotation
+        OT.files[[i]] <- df
+        } else {
+          OT.files[[i]] <- df
+        }
+      i <- i+1
+      disease.name <- sub(".*diseases_","", OT.file)
+      disease.name <- gsub(".tsv", "", disease.name)
+      disease.names <- append(disease.names, disease.name)
+    }
+  }
+
+  names(OT.files) <-  disease.names
+  OT.files <- map(OT.files, ~.x %>%
+                    distinct())
+  return(OT.files)
+}
+```
+
+```{r, eval = sliding_window, include = sliding_window}
+conversion.t <- read.csv("OpenTargets/mouse_human_genes_feb_23.tsv", header = T, sep = "\t")
+```
+
+## loading files
+```{r Load OpenTarget files, eval = sliding_window, include = sliding_window}
+OpenTargets.path <- "OpenTargets"
+
+OT.files <- get_opentarget( opentarget_dir = OpenTargets.path ,mouse_genes = "OpenTargets/mouse_human_genes.tsv")
+OT.files.human <-get_opentarget(opentarget_dir = OpenTargets.path)
+
+CVDs <- get_opentarget( opentarget_dir = "OpenTargets/CVDs" ,mouse_genes = "OpenTargets/mouse_human_genes.tsv")
+CVDs.human <- get_opentarget( opentarget_dir = "OpenTargets/CVDs" )
+
+lipid.diseases <- get_opentarget( opentarget_dir = "OpenTargets/lipids"  ,mouse_genes = "OpenTargets/mouse_human_genes.tsv")
+
+lipid.diseases.human <- get_opentarget( opentarget_dir = "OpenTargets/lipids")
+
+OT.files <- c(OT.files,  lipid.diseases)
+OT.files.human <- c(OT.files.human, lipid.diseases.human)
+
+```
+## clean 
+already includes filtering step tailored to the seurat object ==> only keeps genes that are also present in the object
+```{r clean OT.files from duplicates, eval = sliding_window, include = sliding_window}
+OT.files <- map(OT.files, ~.x %>%
+  dplyr::select(Gene_symbol, Overall_assoc.score, Genetic_assoc.,Drugs, Animal_models)%>%
+  distinct() %>%
+  filter(!is.na(Gene_symbol)&Gene_symbol %in% rownames(se)) %>%
+    group_by(Gene_symbol)%>%
+  slice(which.max(Overall_assoc.score))%>% #==> when there is a gene mentioned twice, only keep the row where the overall association score is the highest ==> reason for duplicates is that multiple human genes have the same mouse homolog etc...
+    ungroup())
+
+# saveRDS(OT.files, file = paste("OpenTargets", sample,"OT_files_list.rds", sep = "/"))
+
+
+```
+
+
+# sliding window
+## create gene lists
+
+## newer approach: split OT.fles into genes that have scores for overall.assoc (optional), genetic.assoc and drug association
+```{r define split OT.fles function, eval = sliding_window, include = sliding_window}
+# put this function in lapply 
+split.OT.files <- function(x, name, prefix = T){
+  # print(x)
+  # print(name)
+  # overall.associations <-  x %>%
+  #   arrange(desc(Overall_assoc.score)) %>%
+  #   filter(!is.na(Overall_assoc.score)) %>%
+  #   .$Gene_symbol
+  genetic.associations <-  x %>%
+    arrange(desc(Genetic_assoc.)) %>%
+    filter(!is.na(Genetic_assoc.)) %>%
+    .$Gene_symbol
+  drug.associations <-  x %>%
+    arrange(desc(Drugs)) %>%
+    filter(!is.na(Drugs)) %>%
+    .$Gene_symbol
+  # print(lis[[x]])
+  if (prefix){
+    # disease <- names(x[[prefix]])
+    elements <- c(#paste(name,"overall.associations", sep = "_"),
+                  paste(name,"genetic.associations", sep = "_"),
+                  paste(name,"drug.associations", sep = "_"))
+    # print(elements)
+    list <- list(#overall.associations,
+                  genetic.associations,
+                  drug.associations )
+    names(list) <- elements
+
+  } else{
+    list <- list(#"overall.associations" = overall.associations,
+               "genetic.associations" = genetic.associations, 
+               "drug.associations" = drug.associations )
+    }
+  return(list)
+}
+
+
+# list structure is: disease1-c(overall.associations,genetic.associations, drug.associations)
+                      # disease2-c(overall.associations,genetic.associations, drug.associations)
+#to get:                disease1-c(disease1_overall.associations,disease1_genetic.associations, disease1_drug.associations)
+                      # disease2-c(disease2_overall.associations,disease2_genetic.associations, disease2_drug.associations) 
+# state: prefix = T
+
+
+```
+
+
+
+```{r split OT files, eval = sliding_window, include = sliding_window}
+OT.files.split <- map2(OT.files, names(OT.files), split.OT.files, prefix = T) 
+# can also use imap apparently, where "imap(x, ...), an indexed map, is short hand for map2(x, names(x), ...) if x has names,"
+```
+
+### filter genes to those also present in the SE object and get rid of empty sets
+
+#### list.seurat.filter function 
+```{r remove empty list elements, eval = sliding_window, include = sliding_window}
+list.seurat.filter <- function (list){ #for a list of lists or vectors, remove those lists/vectors that are empty 
+  list <- list[sapply(list, function(x) length(x)>0)]
+  return(list)
+}
+```
+
+```{r, eval = sliding_window, include = sliding_window}
+OT.files.split <- lapply(OT.files.split, list.seurat.filter)
+```
+
+
+
+```{r, eval = sliding_window, include = sliding_window}
+saveRDS(OT.files.split, file = paste0("OpenTargets/scRNA/", cond,"/OT_files_split.rds"))
+
+```
+
+### create overlapping windows
+```{r, overlapping windows function2, eval = sliding_window, include = sliding_window}
+
+splitWithOverlap <- function(vec, seg.length, overlap) {
+  starts = seq(1, length(vec), by=seg.length-overlap)
+  ends   = starts + seg.length - 1
+  ends[ends > length(vec)] = length(vec)
+
+  lapply(1:length(starts), function(i) vec[starts[i]:ends[i]])
+}
+win.size <- 50
+move.by <- 10
+overlap <- win.size-move.by
+
+windows.list1 <- sapply(OT.files.split, function(x) lapply(x, splitWithOverlap, seg.length = win.size, overlap = overlap))
+
+
+splitWithOverlap <- function(vec, seg.length, overlap) {
+  starts = seq(1, length(vec), by=seg.length-overlap)
+  ends   = starts + seg.length - 1
+  ends[ends > length(vec)] = length(vec)
+
+  lapply(1:length(starts), function(i) vec[starts[i]:ends[i]])
+}
+win.size <- 50
+move.by <- 10
+overlap <- win.size-move.by
+
+windows.list1 <- lapply(OT.files.split, function(x) lapply(x, splitWithOverlap, seg.length = win.size, overlap = overlap))
+
+```
+
+```{r, eval = sliding_window, include = sliding_window}
+length(windows.list1$NAFLD["NAFLD_genetic.associations"])
+```
+
+
+### Addmodulescore from list of list(?)
+modified function from "pathway sets enrichment"
+```{r, eval = sliding_window, include = sliding_window}
+
+modulescores.from.list3 <- function(window.list, seurat.object){
+  
+  for (i in c(1:length(window.list))){
+    # disease: e.g. "NAFLD"
+    for (j in c(1:length(window.list[[i]]))){
+      #set: genetic association, drug association ==> those are lists of windows
+      # print(j)
+      num.windows <- length(window.list[[i]][[j]])
+      cat(names(window.list[[i]][j]), "\t", num.windows, " windows will be added", "\r\n")
+      
+      windows <- window.list[[i]][[j]] # list of vector of gene names
+      print(class(windows))
+      names <- paste0(names(window.list[[i]][j]),"_rank_")
+      print(names)
+      
+      seurat.object <- AddModuleScore(seurat.object, features = windows, ctrl = 100, name = names)
+      
+      # cat(i,"/",num.windows, "\t", window.name, "\r")
+      
+      # cat(window.name, "\r")
+   
+    # print(set)
+
+    }
+  }
+  # print(paste(num.all.sets, " added to seurat object"))
+  return(seurat.object)
+}
+
+```
+
+
+
+
+
+
+
+```{r addmodule for sliding window, warning=FALSE, eval = sliding_window, include = sliding_window}
+se <- modulescores.from.list3(windows.list1, se)
+```
+
+```{r, eval = sliding_window, include = sliding_window}
+meta.data <- se[[]]
+# maybe select only the windows, in case you don't want to change the rest of the meta.data ==> or you write the entire meta data to the file and when loading it you can still select only the sliding windows
+# used option 2 ==> 
+write.table(meta.data,
+          file = paste0(sample.path, "harmony/sliding_window_meta_data.tsv"),
+          sep = "\t",
+          col.names = T,
+          row.names=T)
+```
+
+```{r, eval = sliding_window, include = sliding_window}
+meta.data %>%
+  select(contains("_rank_")) %>%
+  colnames() %>%
+  gsub("_rank_.*","",.)%>%
+  unique()
+
+```
+
+```{r make summary df of the windows, eval = sliding_window, include = sliding_window}
+# this step might be also done in uppmax and then further processed locally because the sliding window data is quite big
+library("psych")
+#here you can decide whether you wanna summarise by cluster or by zone! 
+#zone or seurat_clusters
+summarise.on <- "celltype"
+# meta.data <- se[[]]
+
+summary.meta.clusters <- meta.data %>%
+  dplyr::select(c(summarise.on, contains("_rank_")))
+
+summary.meta.clusters <- describeBy(summary.meta.clusters, group = summary.meta.clusters[, summarise.on], quant = c(.05, .95)) 
+
+summary.meta.clusters <- lapply(summary.meta.clusters, function(x) as.data.frame(x))
+
+
+summary.meta.clusters <- map(summary.meta.clusters, ~.x %>%
+                               rownames_to_column(., var = "window"))
+summary.meta.clusters <- bind_rows(summary.meta.clusters, .id = summarise.on)
+summary.meta.clusters <- summary.meta.clusters %>%
+  filter(!(window %like% "celltype"))
+# rownames(summary.meta.clusters) <- NULL
+head(summary.meta.clusters)
+
+```
+
+``` {r, eval = sliding_window, include = sliding_window}
+write.table(summary.meta.clusters,
+          file = paste0(sample.path, "harmony/sliding_window_meta_data_summarised.tsv"),
+          sep = "\t",
+          col.names = T,
+          row.names=T)
+```
+
+
+
+# null set 
+
+## settings
+```{r, eval = nullset}
+# Run settings
+permutation.nr <- 10000
+genes.in.NULL.set <- 50
+
+NULL.gene.set <- list()
+
+for (i in 1:permutation.nr){
+  genes <- sample(rownames(se), size = genes.in.NULL.set)
+  NULL.gene.set[[i]] <-  genes
+}
+```
+
+## addmodulescore
+```{r addmodulescore for null set, eval = nullset}
+
+se <- AddModuleScore(se, features = NULL.gene.set, name = "NULL_gene_set_")
+```
+
+
+```{r write raw null_set_data to file, eval = nullset}
+# make df with celltype and "seurat_clusters" integers for easier processing later ==> column names will be easier to handle
+# test that, maybe not necessary in the end
+# temp_df <- data.frame(celltype = unique(se$celltype), 
+#                       seurat_clusters = c(1:length(unique(se$celltype))))
+
+#write raw null_set_data to file
+meta.data <- se[[]] %>%
+  # left_join(temp_df) %>% 
+  select(c(celltype, contains("NULL_gene_set_"))) # here, test whether choosing "celltype" or "seurat_clusters" is better
+
+#write raw null_set_data to file
+write.table(meta.data, file = paste0(sample.path, "harmony/se_null_set_meta_data_", cond,"_g", genes.in.NULL.set,".tsv"),
+          sep = "\t",
+          row.names = T,
+          col.names = T)
+```
+
+
+
+
+```{r, further process, eval = nullset}
+#further process, calc median:
+meta.data <- meta.data %>%
+  group_by(celltype) %>%
+  summarise(across(contains("NULL_gene_set_"), median))%>%
+  column_to_rownames("celltype") %>%
+  t() %>%
+  as.data.frame()
+# se_test2 <- reshape(se_test2, idvar = "zone", direction = "wide") #necessary? cant remember
+
+```
+
+
+```{r, eval = nullset}
+#write summarized null_set_data to file
+write.table(meta.data,
+          file = paste0(sample.path, "harmony/se_null_set_summarised_",cond, "_g", genes.in.NULL.set,".tsv"),
+          sep = "\t",
+          row.names = T,
+          col.names = T
+          ) 
+```
+
+
+``` {r portal and central vein markers}
+zonation.markers <- list(central_markers = c("Glul", "Oat"," Slc1a2","Cyp2e1", "Cyp2a5"),
+                          portal_markers = c("Sds","Cyp2f2","Hal","Hsd17b13","Aldh1b1"))
+
+se <- AddModuleScore(se, features = zonation.markers, name = names(zonation.markers))
+meta.data <- se[[]] %>%
+  rename(central_markers = central_markers1,
+         portal_markers = portal_markers2) %>%
+  select(celltype, central_markers, portal_markers, digest, sample)
+
+write.table(meta.data,
+            file = paste0(sample.path, "harmony/zonation_marker_scRNA.tsv"),
+            col.names = T,
+            row.names = T,
+            sep = "\t")
+```
+
+```{r, fig.width = 10, fig.height=8, eval = F}
+# central markers
+sorted.celltypes <- meta.data %>%
+  group_by(celltype) %>%
+  summarise(median_central_markers = median(central_markers),
+            median_portal_markers = median(portal_markers))%>%
+  arrange(desc(median_central_markers)) # Sorting the groups by median of 'central_markers'
+
+#boxplot
+meta.data %>%
+  mutate(celltype = factor(meta.data$celltype, levels = sorted.celltypes$celltype))%>%
+  ggplot(aes(x = celltype, y = central_markers, fill=celltype))+
+  geom_point(position = "jitter", color='black',shape=21, size = 0.1, alpha = 0.4)+
+  geom_boxplot(alpha = 0.7)+
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+#jitter
+meta.data %>%
+  mutate(celltype = factor(meta.data$celltype, levels = sorted.celltypes$celltype))%>%
+  ggplot(aes(x = celltype, y = central_markers, fill=celltype))+
+  geom_point(position = "jitter", color='black',shape=21)+
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+# portal markers
+sorted.celltypes <- sorted.celltypes %>%
+  arrange(desc(median_portal_markers)) # Sorting the groups by median of 'central_markers' or 'portal_markers'
+
+#boxplot
+meta.data %>%
+  mutate(celltype = factor(meta.data$celltype, levels = sorted.celltypes$celltype))%>%
+  ggplot(aes(x = celltype, y = portal_markers, fill=celltype))+
+  geom_point(position = "jitter", color='black',shape=21, size = 0.1, alpha = 0.4)+
+  geom_boxplot(alpha = 0.7)+
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+#jitter
+meta.data %>%
+  mutate(celltype = factor(meta.data$celltype, levels = sorted.celltypes$celltype))%>%
+  ggplot(aes(x = celltype, y = portal_markers, fill=celltype))+
+  geom_point(position = "jitter", color='black',shape=21)+
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+Session info
+```{r}
+sessionInfo()
+```
+

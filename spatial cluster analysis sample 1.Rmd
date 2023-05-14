@@ -1,0 +1,628 @@
+---
+title: "LCA_mouse_liver_spatial_structures_JBO002"
+author: "aaronko"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+    dev: CairoPNG
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+
+big_screen <- F
+knitr::opts_hooks$set(out.width = function(options) {
+  if (big_screen == T) {
+    options$out.width = "100%"
+  }
+  options
+})
+knitr::opts_hooks$set(out.height = function(options) {
+  if (big_screen == T) {
+    options$out.height = "100%"
+  }
+  options
+})
+knitr::opts_chunk$set(dev = "CairoPNG")
+```
+
+Load libraries:
+
+```{r, message=FALSE}
+library(STutility)
+library(dplyr)
+library(RColorBrewer)
+library(scales)
+library(reshape2)
+
+save.imgs <- F #set to true or to false to save/not save the csv markers 
+
+```
+
+Load ST data
+
+```{r}
+infoTable <- read.csv("livercellatlas_data/visium/mouse/infoTable.csv", header = TRUE, sep =",")
+# infoTable$imgs <- gsub("hires", "lowres", infoTable$imgs)
+sample <- "JBO002"
+sample.path <- paste("livercellatlas_data/visium/mouse", infoTable[infoTable$short_file_name == sample,]$geo_accession, sep = "/")
+se <-  InputFromTable(infotable = infoTable[infoTable$short_file_name == sample,],
+                      minUMICountsPerGene = 100,
+                      minSpotsPerGene = 5,
+                      minUMICountsPerSpot = 500,
+                      platform =  "Visium")
+img.save.path <- r"(C:\Users\aaron\OneDrive - Karolinska Institutet\Uni\Master\4. Semester\thesis_project\writing\images\spatial_structures\JBO002\res 0.8\)" 
+```
+
+Load image:
+
+```{r}
+se <- LoadImages(se, time.resolve = FALSE)
+```
+
+View image:
+
+```{r, fig.width=5, fig.height=4}
+ImagePlot(se, method = "raster", annotate = FALSE)
+```
+
+QC metrics se:
+
+```{r}
+# Collect all genes coded on the mitochondrial genome
+mt.genes <- grep(pattern = "^mt-", x = rownames(se), value = TRUE)
+se$percent.mito <- (Matrix::colSums(se@assays$RNA@counts[mt.genes, ])/Matrix::colSums(se@assays$RNA@counts))*100
+#theres a function for this: se$percent.mito <- PercentageFeatureSet(object = se, pattern = "^MT-")
+#(“^MT-“) works for human gene names, "^mt-" for mouse!
+# Collect all genes coding for ribosomal proteins
+rp.genes <- grep(pattern = "^Rpl|^Rps", x = rownames(se), value = TRUE)
+se$percent.ribo <- (Matrix::colSums(se@assays$RNA@counts[rp.genes, ])/Matrix::colSums(se@assays$RNA@counts))*100
+
+```
+
+Plot QC metrics se:
+
+```{r, fig.width=5, fig.height=4}
+pt.size.featureplot <- 1.25
+
+# mitochondrial genes
+p1 <- ST.FeaturePlot(se, features = "percent.mito", cols = c("lightgray", "mistyrose", "red", "dark red", "black"), pt.size = pt.size.featureplot)
+
+# ribosomal protein gene
+p2 <- ST.FeaturePlot(se, features = "percent.ribo", cols = c("lightgray", "mistyrose", "red", "dark red", "black"), pt.size = pt.size.featureplot, pt.border = FALSE, dark.theme = F)
+
+p1
+p2
+
+# q <- ggplot_build(p1)
+# q[["data"]][[1]]$stroke <- NA
+# q <- ggplot_gtable(q)
+# plot(q)
+```
+
+Normalize data: se \<- SCTransform(se,return.only.var.genes = T)
+
+```{r, message=FALSE, include=FALSE}
+se <- SCTransform(se,return.only.var.genes = T)
+```
+
+# NNMF
+
+non-negative matrix factorization (NNMF)
+
+
+## 10 factors ==> liver does not seem to have such a distinct, complex spatial organization. When selecting 40 factors, most of them do not appear to have any spatial pattern.
+non-negative matrix factorization (NNMF)
+
+```{r}
+nfactors <- 10
+se <- RunNMF(se, nfactors = nfactors)
+```
+
+```{r, fig.width=10, fig.height=10}
+cscale <- c("darkblue", "cyan", "yellow", "red", "darkred")
+spots.dimplot <- 0.8
+if (nfactors > 10){
+  max <- 10
+  factors <- c(1:nfactors)
+  dims <- split(factors, ceiling(seq_along(factors)/max))
+  for (i in c(1:length(dims))){
+    print(unlist(dims[[i]]))
+
+    plot(ST.DimPlot(se,
+           dims = unlist(dims[[i]]),
+           ncol = 2, # Sets the number of columns at dimensions level
+           grid.ncol = 4, # Sets the number of columns at sample level
+           reduction = "NMF",
+           dark.theme = T,
+           pt.size = spots.dimplot,
+           center.zero = F,
+           cols = cscale))
+  }
+ } else {
+  plot(ST.DimPlot(se,
+           dims = 1:nfactors,
+           ncol = 3, # Sets the number of columns at dimensions level
+           grid.ncol = 3, # Sets the number of columns at sample level
+           reduction = "NMF",
+           dark.theme = T,
+           pt.size = spots.dimplot,
+           center.zero = F,
+           cols = cscale)
+  )
+ 
+           
+
+}
+```
+
+```{r}
+for (i in c(1:nfactors)){
+  plot(FactorGeneLoadingPlot(se, factor = i)+ggtitle(paste("factor", i)))
+}
+```
+
+# clustering
+## find neighbours
+Shared Nearest Neighbor (SSN) Graph
+
+```{r}
+dims.toUse002 <- c(1,2,6,9,10) #dims.toUse002 <- c(1,2,6,9,10)c(1,2,5,6,7,9,10)
+dims.toUse009 <- c(1,3,6,8) # maybe also try c(1,2,3,4,6,8,10)
+
+se <- FindNeighbors(object = se, verbose = FALSE, reduction = "NMF", dims = dims.toUse002)
+```
+
+Clustering using a modularity optimizer
+## findclusters
+```{r}
+DefaultAssay(se) <- "SCT"
+res <- 0.8
+se <- FindClusters(object = se, verbose = FALSE, resolution = res)
+cur.res <- paste0("SCT_snn_res.", res)
+se <- SetIdent(se, value = cur.res)
+
+```
+
+
+## figure 2b, Spatial cluster plot
+
+```{r,fig.width=10, fig.height=8}
+library(viridis)
+
+# n <- 18
+# qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+# col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+# col_vector[6] <- "white"
+# col_vector[8] <- "lightpink"
+# col_vector2 <- c(c("orange","lightblue","darkred","darkblue"),col_vector)
+n <- length(unique(se[[]][,cur.res])) %>% as.numeric()
+col_vector2 <- turbo(n = n, begin = 0.2, end = 1)
+
+ST.FeaturePlot(object = se, features = cur.res, pt.size = pt.size.featureplot*2, cols = col_vector2, pt.border = FALSE, dark.theme = F)
+```
+
+
+```{r,fig.width=9, fig.height=8}
+p.overlay.unsup.clusters <- FeatureOverlay(object = se, features = cur.res, pt.alpha = 0.8, pt.size = 1.75, cols = col_vector2, pt.border = FALSE,
+                                           label.by = NULL)
+p.overlay.unsup.clusters
+ggsave(filename = paste0(img.save.path, "cluster feature overlay.svg"),
+       plot = p.overlay.unsup.clusters,
+       device = "svg",
+       dpi = 96)
+#c("orange","lightblue","red","blue")
+```
+
+
+
+```{r,fig.width=8, fig.height=7}
+
+ST.FeaturePlot(object = se, features = cur.res, pt.size = 0.8, split.labels = T, indices = 1, show.sb = FALSE, ncol = 3, cols = col_vector2, dark.theme = F)
+```
+
+
+Save cluster annotations
+```{r, eval=F}
+seurat_clusters <- as.data.frame(se$seurat_clusters)
+# seurat_clusters$Barcode <- colnames(se)
+seurat_clusters$seurat_clusters <- seurat_clusters$`se$seurat_clusters`
+seurat_clusters$`se$seurat_clusters` <- NULL
+
+write.table(seurat_clusters,file=paste0(sample.path, "/seurat_clusters_res",res, ".csv"), col.names = T, row.names = T,quote = FALSE,sep = "\t")
+```
+
+
+
+#DGE analysis, for all clusters
+
+```{r}
+DefaultAssay(se) <- "RNA"
+se <- se %>%
+  NormalizeData() %>%
+  ScaleData() 
+
+se <- SetIdent(se, value = cur.res)
+N.markers <- FindAllMarkers(se, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25,slot = "data")
+```
+
+
+Save N.markers
+```{r, eval=F}
+write.table(N.markers,file=paste0(sample.path, "/DE_cluster_genes_res",res, ".csv"), col.names = T, row.names = T,quote = FALSE,sep = "\t")
+```
+
+
+
+
+# UMAP run
+```{r}
+se <- RunUMAP(se, reduction = "NMF", dims = dims.toUse002, n.neighbors = 10) #0, min.dist = 0.005
+```
+
+
+# plots
+## UMAP plots
+### figure 2c, UMAP clusters
+```{r}
+p.UMAP.unsup.clusters <- DimPlot(se, reduction = "umap",
+                                 label = T,
+                                 label.size = 6,
+                                 cols = col_vector2,
+                                 combine = T,
+                                 label.box = T,
+                                 label.color = "black")
+p.UMAP.unsup.clusters
+opts_current$get("fig.width")
+ggsave(filename = paste0(img.save.path, "cluster UMAP.pdf"),
+       plot = p.UMAP.unsup.clusters,
+       device = "pdf",
+       dpi = 96,
+       height = 5)
+
+```
+
+
+Select top genes to plot
+```{r}
+topGenes <- N.markers %>% 
+            group_by(cluster) %>% 
+            arrange(cluster,p_val_adj) %>%
+            slice_head(n=20)
+topGenes
+```
+
+Subset top genes according to p value
+```{r}
+cluster.top.genes <- list()
+for (i in as.numeric(levels(se[[]]$seurat_clusters))){
+  cluster.top.genes[[i+1]] <- as.character(t(subset(topGenes,cluster==i, select = gene)))
+}
+names(cluster.top.genes) <- c(0:(length(cluster.top.genes)-1))
+cell.markers <- read.csv("cell_type_marker.csv", sep = ",", header = TRUE)
+zonation.markers <- read.csv("zonation_marker.csv", sep = ",", header = TRUE)
+
+portal.markers <- zonation.markers[!is.na(zonation.markers$portal.marker),]$portal.marker
+central.markers <- zonation.markers[!is.na(zonation.markers$central.marker),]$central.marker
+mid.markers <- zonation.markers[!is.na(zonation.markers$mid.marker),]$mid.marker
+cluster.top.genes[["portal.markers"]] <- portal.markers
+cluster.top.genes[["central.markers"]] <- central.markers
+cluster.top.genes[["mid.markers"]] <- mid.markers
+
+```
+
+### UMAP top genes
+UMAP and Spatial visualization of top markers for each cluster
+```{r, fig.height=15, fig.width=14}
+max.length <- sapply(cluster.top.genes, length) %>% max() %>% as.numeric()
+library(cowplot)
+knitr::opts_current$set(fig.height = 3*max.length/4) # height is then determined by the maximum number of top genetic genes in a cluster ==> in BH001 case it's 20
+# Define colors for heatmap
+# n <- length(cluster.top.genes)
+n <- length(unique(se[[]][,cur.res]))
+# col_vector2 <- viridis(n = n+1)[2:(n+1)]
+col_vector3 <- viridis(n = n, 
+                      option = "inferno")
+
+g <- 1
+for (i in cluster.top.genes){
+    print(names(cluster.top.genes[g]))
+    g <- g+1
+    p <- FeaturePlot(se,
+                     features = i,
+                     reduction = "umap",
+                     order = TRUE,
+                     pt.size = 0.2,
+                     cols = col_vector3,
+                     combine = F)
+    
+    print(plot_grid(plotlist = p, ncol = 4, nrow = max.length/4 ))
+}
+
+```
+
+
+## VlnPlots
+```{r, VlnPlots, fig.width = 16, fig.height = 20}
+knitr::opts_current$set(fig.height = 3*max.length/4) # height is then determined by the maximum number of top genetic genes in a cluster ==> in BH001 case it's 20
+# you basically need 0.75 width per cluster per plot in each row, i.e. 4 clusters * 4 ncol = 16 ==> *0.75 = 12 = fig.width
+
+for (i in 1:length(cluster.top.genes)){
+  print(names(cluster.top.genes[i]))
+  p <- VlnPlot(se, features = cluster.top.genes[[i]], cols = col_vector2, pt.size = 0.1, ncol = 4, combine = F)
+    for (j in 1:length(p)){
+        p[[j]] <- p[[j]]+
+          geom_boxplot(alpha = 0.6, linetype = 1, color = "black", linewidth = 1)+
+          # geom_boxplot(alpha = 0.4, linetype = 5, color = "black")+
+          theme(legend.position = "none") +
+          scale_x_discrete(name = "Seurat Clusters")
+      }
+  print(plot_grid(plotlist = p, ncol = 4, nrow = max.length/4 ))
+       
+}
+
+```
+
+
+```{r vlnplot selected marker genes, fig.height=3, fig.width=4}
+central.genes <- c("Oat","Cyp2e1","Glul")
+portal.genes <- c("Cyp2f2","Sds","Hal","Hsd17b13")
+mid.genes <- c("Hamp2","Igfbp2","Hamp")
+marker.genes <- c(central.genes, portal.genes,mid.genes)
+
+p <- VlnPlot(se,
+             features = central.genes,
+             cols = col_vector2,
+             pt.size = 0.1,
+             ncol = 4,
+             combine = F,
+             sort = "decreasing")
+
+p1 <- VlnPlot(se,
+             features = portal.genes,
+             cols = col_vector2,
+             pt.size = 0.1,
+             ncol = 4,
+             combine = F,
+             sort = "increasing")
+
+p2 <- VlnPlot(se,
+             features = mid.genes,
+             cols = col_vector2,
+             pt.size = 0.1,
+             ncol = 4,
+             combine = F,
+             sort = "increasing")
+p <- append(p, p1) %>%append(p2)
+for (j in 1:length(p)){
+      p[[j]] <- p[[j]]+
+        geom_boxplot(alpha = 0.6, linetype = 1, color = "black", linewidth = 0.5)+
+        # geom_boxplot(alpha = 0.4, linetype = 5, color = "black")+
+        theme(legend.position = "none") +
+        scale_x_discrete(name = "Seurat Clusters")
+}
+
+for (i in p){
+  plot(i)
+}
+```
+
+### figure 2d
+```{r , fig.height=3, fig.width=4}
+for (i in 1:length(p)){
+  plot(p[[i]])
+  ggsave(filename = paste0(img.save.path,marker.genes[i]," vlnplot.svg"),
+         plot = p[[i]],
+         device = "svg",
+         dpi = 96)
+}
+
+
+```
+
+
+## figure 2e, heatmap cluster marker genes
+make heatmap of the most differentially expressed genes in each cluster, compare to zonation markers 
+```{r,, fig.width= 8, fig.height=6}
+N.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+
+
+
+p <- DoHeatmap(se, features = top10$gene, group.colors = col_vector2, combine = T)+  theme(text = element_text(face = "bold", size = 12))
+
+```
+
+
+```{r,, fig.width= 8, fig.height=8}
+ggsave(filename = paste0(img.save.path,"DoHeatmap plot not ordered.png"),
+       plot = p,
+       device = "png",
+       dpi = 330,
+       height = 6,
+       width = 8)
+
+DoHeatmap(se, features = c(cluster.top.genes[["portal.markers"]],cluster.top.genes[["central.markers"]],cluster.top.genes[["mid.markers"]]), group.colors = col_vector2)
+# order clusters by Oat or Cyp2f2 expression
+library(tidyverse)
+library(forcats)
+ordering <- AverageExpression(se, features = c("Oat","Cyp2f2"), assays = "SCT", group.by = cur.res) %>% as.data.frame()  %>%
+   rownames_to_column(var = "gene") %>%
+  pivot_longer(cols = starts_with("SCT"),
+               names_to = "cluster",
+               values_to = "expression")
+ordering$cluster <- gsub("SCT.","",ordering$cluster)
+
+ordering <- ordering %>%
+  pivot_wider(names_from = gene,
+              values_from = expression)
+
+test <- ordering %>%
+  arrange(Oat) %>%
+  .$cluster
+
+  
+top10 <- top10 %>%
+  mutate(cluster = factor(cluster, levels = test)) %>%
+  arrange(cluster)%>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC)
+se.heat <- se
+se.heat@active.ident <- factor(x =se.heat@active.ident, levels = test)
+
+p1 <- DoHeatmap(se.heat, features = top10$gene ,group.colors = col_vector2)
+p1 
+ggsave(filename = paste0(img.save.path,"DoHeatmap plot Oat ordered.png"),
+       plot = p1,
+       device = "png",
+       dpi = 330)
+
+
+DoHeatmap(se.heat, features = c(cluster.top.genes[["portal.markers"]],cluster.top.genes[["central.markers"]],cluster.top.genes[["mid.markers"]]), group.colors = col_vector2)
+```
+
+
+# annotate zones
+```{r}
+includezones <- F #ifelse(res == 0.2, TRUE, FALSE)
+```
+
+```{r,fig.width=10, fig.height=8,  eval = includezones, include = includezones}
+se@meta.data$zone <- se@meta.data$seurat_clusters
+#orange = mid, lightblue = periportal, red = central, blue = portal
+se@meta.data$zone <- as.character(se@meta.data$zone)
+se@meta.data$zone[se@meta.data$zone==0] <- "mid_cluster"
+se@meta.data$zone[se@meta.data$zone==1] <- "periportal_cluster"
+se@meta.data$zone[se@meta.data$zone==2] <- "central_cluster"
+se@meta.data$zone[se@meta.data$zone==3] <- "portal_cluster"
+se@meta.data$zone <- as.factor(se@meta.data$zone)
+
+# col_vector2 <- c("darkred","orange","lightblue","darkblue")
+
+p.overlay.annot.cluster <- FeatureOverlay(object = se , features = "zone", pt.alpha = 0.75, pt.size = 2.5, cols = col_vector2, pt.border = FALSE)
+p.overlay.annot.cluster
+
+p <- ST.FeaturePlot(object = se , features = "zone", pt.size = 2.5, cols = col_vector2, pt.border = FALSE)
+
+p
+```
+```{r}
+ggsave(filename = paste0(img.save.path, "annotated_zones_feature_overlay.svg"),
+       plot = p,
+       device = "svg",
+       dpi = 96,
+       height = 8,
+       width = 10,
+       bg = "transparent")
+```
+
+
+Save cluster ==> zone annotations
+```{r, eval = includezones, include = includezones}
+
+seurat_clusters <- as.data.frame(se$seurat_clusters)
+# seurat_clusters$Barcode <- colnames(se)
+seurat_clusters$seurat_clusters <- seurat_clusters$`se$seurat_clusters`
+seurat_clusters$`se$seurat_clusters` <- NULL
+write.table(seurat_clusters,file=paste(sample.path, "seurat_clusters.csv", sep ="/"), col.names = T, row.names = T,quote = FALSE,sep = "\t")
+
+
+seurat_clusters <- as.data.frame(se$zone)
+# seurat_clusters$Barcode <- colnames(se)
+seurat_clusters$seurat_clusters <- seurat_clusters$`se$zone`
+seurat_clusters$`se$zone` <- NULL
+
+write.table(seurat_clusters,file=paste0(sample.path, "/seurat_clusters_annot_zones.csv"), col.names = T, row.names = T,quote = FALSE,sep = "\t")
+
+
+
+```
+
+
+```{r, eval = includezones, include = includezones}
+se <- SetIdent(se, value = "zone")
+N.markers <- FindAllMarkers(se, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25,slot = "data")
+#repeat search for N markers but this time the clusters are named according to their supposed zone
+```
+
+```{r, fig.width= 8, fig.height=4.5, eval = includezones, include = includezones}
+N.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(se, features = top10$gene,group.colors = col_vector2)
+
+```
+
+UMAP clusters
+```{r, fig.width = 5, fig.height = 4, eval = includezones, include = includezones }
+DimPlot(se, reduction = "umap", label = T,label.size = 4,cols = col_vector2)
+
+```
+
+
+```{r, eval=save.imgs, include = save.imgs}
+# write.table(N.markers,file=paste(sample.path, "DE_genes_zones.csv", sep ="/"), col.names = T, row.names = T,quote = FALSE,sep = "\t")
+
+```
+
+Spatial plot
+
+
+```{r,fig.width=5, fig.height=4}
+
+n <- 18
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+col_vector[6] <- "white"
+col_vector[8] <- "lightpink"
+
+ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, cols = col_vector, pt.border = FALSE, dark.theme = T)
+
+col_vector2 <- c(c("lightblue","orange","darkred","darkblue"),col_vector)
+#orange = mid, lightblue = periportal, red = central, blue = portal
+#c("mid","periportal","central","portal")
+p.overlay.landmark.cluster <- FeatureOverlay(object = se, features = "seurat_clusters",pt.alpha = 0.5, pt.size = 2, cols = col_vector2, pt.border = FALSE)
+#c("orange","lightblue","red","blue")
+p.overlay.landmark.cluster
+```
+
+
+```{r}
+N.markers <- FindAllMarkers(se, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25,slot = "data")
+N.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(se, features = top10$gene,group.colors = col_vector2) 
+
+```
+
+```{r, fig.width = 5, fig.height = 4}
+se.subset <- SubsetSTData(se, expression = nFeature_RNA >= 2000 & nCount_RNA >=10000 &percent.mito<1.5)
+FeatureOverlay(se.subset, features = "nFeature_RNA", pt.alpha = 0.75, cols = c("white","darkgreen"))
+```
+
+
+
+
+
+```{r, eval = F}
+OT.files <- readRDS("OpenTargets/OT_files_list.rds")
+all_gene_sets <- readRDS("OpenTargets/all_gene_sets.rds")
+```
+
+
+
+
+
+```{r}
+
+sessionInfo()
+
+
+```
